@@ -34,8 +34,18 @@ export function startDaemon(home, configOverride) {
   });
 
   return new Promise((resolve, reject) => {
-    server.once("error", reject);
-    server.listen(config.daemonPort || 0, "127.0.0.1", () => {
+    server.once("error", (error) => {
+      if (error?.code === "EADDRINUSE") {
+        reject(
+          new Error(
+            `zcode_daemon_port_in_use: 127.0.0.1:${config.daemonPort} 已被占用。若不是另一个 zcode-sub daemon，请改 ${pathsOf(home).configFile} 的 daemonPort 后重试。`,
+          ),
+        );
+        return;
+      }
+      reject(error);
+    });
+    server.listen(config.daemonPort, "127.0.0.1", () => {
       const address = server.address();
       const port = typeof address === "object" && address ? address.port : config.daemonPort;
       log("info", "daemon_started", { pid: process.pid, port });

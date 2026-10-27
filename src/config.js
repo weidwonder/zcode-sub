@@ -27,7 +27,8 @@ export function createInitialConfig() {
     botId: "",
     secret: randomUUID().replace(/-/gu, ""),
     userId: "zcode-sub",
-    daemonPort: 0,
+    // 端口固定：GUI bot 配置里的 webhookUrl 是持久的，端口漂移会让它失效。
+    daemonPort: 47899,
     ingressPort: 47821,
   };
 }

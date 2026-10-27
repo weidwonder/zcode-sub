@@ -37,6 +37,7 @@ export function assertValidName(name) {
   if (!isValidName(name)) {
     const err = new Error(`zcode_name_invalid: 任务名只能含字母数字 . _ -，收到 "${name}"`);
     err.code = "zcode_name_invalid";
+    err.exitCode = 7;
     throw err;
   }
 }
