@@ -108,6 +108,14 @@ ensure_writable() { # $1=将写入的目录 $2=用途
     die "无权限写入：${d}（$2）。若在 dwc 座位内，请在座位外执行：dwc grant $d"
   fi
 }
+install_step_failed() { # $1=步骤名；mv 旧包之后的失败必须指明旧包去向
+  local msg="安装步骤失败：${1}（输出见上）。"
+  if [[ -n "$ROLLED_FROM" ]]; then
+    msg="${msg}旧包已保留：${ROLLED_FROM}；重跑 patch/rollback-desktop.sh 可恢复。"
+  fi
+  die "$msg"
+}
+
 # ---- 备份现有包并安装 ----
 STAMP="$(date +%Y%m%d-%H%M%S)"
 [[ $DRY_RUN -eq 1 ]] || { ensure_writable /Applications "/Applications 安装目标"; ensure_writable "$BACKUP_ROOT/apps" "旧包备份区"; }
@@ -123,14 +131,14 @@ else
 fi
 
 log "> ditto '$SRC_APP' '$TARGET'"
-[[ $DRY_RUN -eq 1 ]] || ditto "$SRC_APP" "$TARGET"
+[[ $DRY_RUN -eq 1 ]] || ditto "$SRC_APP" "$TARGET" || install_step_failed "ditto"
 
 log "> xattr -dr com.apple.quarantine '$TARGET'"
 [[ $DRY_RUN -eq 1 ]] || xattr -dr com.apple.quarantine "$TARGET" 2>/dev/null || true
 
 if [[ $DO_SIGN -eq 1 ]]; then
   log "> codesign --force --deep --sign - '$TARGET'（ad-hoc）"
-  [[ $DRY_RUN -eq 1 ]] || codesign --force --deep --sign - "$TARGET"
+  [[ $DRY_RUN -eq 1 ]] || codesign --force --deep --sign - "$TARGET" || install_step_failed "codesign"
 else
   log "跳过 ad-hoc 签名（--no-sign）"
 fi

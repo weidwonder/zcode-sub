@@ -43,6 +43,18 @@ function stringConst(path, constName) {
   return text.slice(open + 1, close);
 }
 
+// 数组常量（收口为 `] as const;`，如 executionColumns）：取方括号内文本补回外层括号 JSON.parse（TS 尾逗号合法、JSON 不合法，去掉再解析）
+function arrayConst(path, constName) {
+  const text = readFileSync(path, "utf8");
+  const head = `const ${constName} = [`;
+  const decl = text.indexOf(head);
+  if (decl === -1) throw new Error(`找不到 ${constName} in ${path}`);
+  const close = text.indexOf("] as const;", decl);
+  if (close === -1) throw new Error(`提取 ${constName} 失败 in ${path}`);
+  const body = text.slice(decl + head.length, close).trim().replace(/,$/, "");
+  return JSON.parse(`[${body}]`);
+}
+
 // 定位 `id: "<id>"` 所在段内 from 标记之后到 to 首次出现之间的原始文本；找不到即抛错（门检失败，不静默用旧值）
 // includeTo=true 时把 to 本身含进结果（如 checksumInput 的收口 `]`）
 function segmentText(text, path, id, from, to, includeTo = false) {
@@ -119,11 +131,8 @@ try {
   const ledger = readLedger(`${zcodeRoot}/v2/tasks-index.sqlite`, "tasks_schema_migration");
   const glmSql = tpl(`${src}/packages/services/src/session/tasksDatabase/official-glm-selection-v3.ts`, "OFFICIAL_GLM_SELECTION_MIGRATION_SQL");
   const admissionsSql = tpl(`${src}/packages/services/src/task-groups/migration-v6.ts`, "TASK_GROUP_ADMISSIONS_SQL");
-  const executionColumns = [
-    ["automations", "project_id"], ["automations", "host_id"], ["automations", "additional_directories"],
-    ["off_peak_tasks", "project_id"], ["off_peak_tasks", "host_id"], ["off_peak_tasks", "additional_directories"],
-  ];
   const tasksMigPath = `${src}/packages/services/src/session/tasksDatabase/migrations.ts`;
+  const executionColumns = arrayConst(tasksMigPath, "executionColumns");
   const tasks0002Input = JSON.parse(segmentText(readFileSync(tasksMigPath, "utf8"), tasksMigPath, "0002_provider_selection", "checksumInput: ", "]", true));
   check("tasks", "0002_provider_selection", jsha(tasks0002Input), ledger);
   check("tasks", "0003_official_glm_selection", jsha([glmSql]), ledger);

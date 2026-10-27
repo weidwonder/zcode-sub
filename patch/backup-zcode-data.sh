@@ -210,6 +210,6 @@ fi
 } > "$BACKUP_DIR/manifest.json"
 
 END_TS=$(date +%s)
-log "备份完成：${#manifest_entries[@]} 个文件，共 $TOTAL_BYTES 字节，耗时 $((END_TS - START_TS))s"
+log "备份完成：${#manifest_entries[@]} 个文件，共 $TOTAL_BYTES 字节，跳过 ${#SKIP_REASONS[@]} 项，耗时 $((END_TS - START_TS))s"
 log "备份目录：$BACKUP_DIR"
 log "校验：cd '$BACKUP_DIR' && shasum -a 256 -c sha256sums.txt"

@@ -2,6 +2,7 @@
 # 用开源 ZCode 源码构建 mac arm64 桌面安装包（补丁版）。
 # 工具链：Node 24.14.0 解压到 /Users/weidwonder/projects/.toolchains（不动全局）；
 # 身份：--identity preview（默认，ZCode Preview.app 与正式版并存）| production（ZCode.app 原地替换用）。
+# 产物：--no-dmg 跳过 DMG 只出 zip（受限沙箱内 hdiutil 必败时用）。
 # 环境变量依据（源码 3.16.2）：
 #   packages/desktop/scripts/desktop-product-identity.mjs:59-68  ZCODE_ENV=production + ZCODE_PREVIEW_IDENTITY=1 → Preview 身份连生产后端
 #   scripts/build-time-config.mjs:44-47                          ZCODE_AUTO_UPDATE 置 0 关闭自动更新（构建期注入）
@@ -12,6 +13,7 @@ SRC="${1:-}"
 IDENTITY="preview"
 DRY_RUN=0
 SKIP_INSTALL=0
+NO_DMG=0
 NODE_VERSION="24.14.0"
 TOOLCHAIN_ROOT="/Users/weidwonder/projects/.toolchains"
 NODE_MIRRORS=(
@@ -35,6 +37,7 @@ while [[ $# -gt 0 ]]; do
     --identity) IDENTITY="$2"; shift 2 ;;
     --identity=*) IDENTITY="${1#*=}"; shift ;;
     --dry-run) DRY_RUN=1; shift ;;
+    --no-dmg) NO_DMG=1; shift ;;
     --skip-install) SKIP_INSTALL=1; shift ;;
     -h|--help) sed -n '2,12p' "$0"; exit 0 ;;
     *) SRC="$1"; shift ;;
@@ -70,6 +73,29 @@ if [[ ! -x "$NODE_BIN" ]]; then
 fi
 export PATH="$TOOLCHAIN_ROOT/node-v$NODE_VERSION/bin:$PATH"
 log "node: $(command -v node) ($(node --version 2>/dev/null || echo 未验证))"
+
+# ---- 缓存重定向（HOME 被重定向的受限环境下，pnpm/npm/electron 缓存写不进或塞爆座位目录；
+# 默认指到工具链目录，用户已显式设置的环境变量不改）----
+[[ -n "${npm_config_store_dir:-}" ]] || export npm_config_store_dir="$TOOLCHAIN_ROOT/pnpm-store"
+[[ -n "${npm_config_cache:-}" ]] || export npm_config_cache="$TOOLCHAIN_ROOT/npm-cache"
+[[ -n "${npm_config_devdir:-}" ]] || export npm_config_devdir="$TOOLCHAIN_ROOT/node-gyp"
+[[ -n "${XDG_CACHE_HOME:-}" ]] || export XDG_CACHE_HOME="$TOOLCHAIN_ROOT/xdg-cache"
+[[ -n "${XDG_DATA_HOME:-}" ]] || export XDG_DATA_HOME="$TOOLCHAIN_ROOT/xdg-data"
+[[ -n "${ELECTRON_CACHE:-}" ]] || export ELECTRON_CACHE="$TOOLCHAIN_ROOT/electron-cache"
+[[ -n "${electron_config_cache:-}" ]] || export electron_config_cache="$TOOLCHAIN_ROOT/electron-config-cache"
+[[ -n "${ELECTRON_BUILDER_CACHE:-}" ]] || export ELECTRON_BUILDER_CACHE="$TOOLCHAIN_ROOT/electron-builder-cache"
+log "包管理器/构建缓存默认重定向到 ${TOOLCHAIN_ROOT}（已显式设置的不覆盖）"
+
+# ---- 残缺 Xcode 探测：xcode-select 指向的目录缺 xcodebuild 而 CommandLineTools 完整时，
+# 自动切 CLT（node-pty 等 native 依赖的 electron-rebuild 需要 xcodebuild）----
+if [[ "$(uname)" == "Darwin" ]]; then
+  XSEL_DIR="$(xcode-select -p 2>/dev/null || true)"
+  if [[ -n "$XSEL_DIR" && ! -x "$XSEL_DIR/usr/bin/xcodebuild" && -x /Library/Developer/CommandLineTools/usr/bin/xcodebuild ]]; then
+    export DEVELOPER_DIR=/Library/Developer/CommandLineTools
+    [[ -d "$DEVELOPER_DIR/SDKs/MacOSX.sdk" ]] && export SDKROOT="$DEVELOPER_DIR/SDKs/MacOSX.sdk"
+    log "警告：xcode-select 指向的 $XSEL_DIR 缺 xcodebuild（残缺 Xcode），已自动改用 CommandLineTools（DEVELOPER_DIR${SDKROOT:+ + SDKROOT}）。根治请在座位外执行：sudo xcode-select -s /Library/Developer/CommandLineTools"
+  fi
+fi
 
 # ---- pnpm（要求 10.33.2；本机版本不符或缺席时装到工具链目录，不动全局）----
 PNPM_VERSION="10.33.2"
@@ -129,7 +155,42 @@ else
 fi
 
 # ---- 打包 ----
-run_in_src pnpm bundle:desktop -- --os mac --arch arm64 || die "bundle:desktop 失败（输出见上）"
+# run_in_desktop：上游 bundle.mjs 的三步都在 packages/desktop 目录下执行
+run_in_desktop() {
+  log "> (cd $SRC/packages/desktop && env ${BUILD_ENV[*]} $*)"
+  [[ $DRY_RUN -eq 1 ]] && return 0
+  (cd "$SRC/packages/desktop" && env "${BUILD_ENV[@]}" "$@")
+}
+
+DIST_DIR="$SRC/packages/desktop/dist"
+START_TS=$(date +%s)
+
+if [[ $NO_DMG -eq 1 ]]; then
+  # zip 通路：复刻 bundle.mjs 的 prepare→build→electron-builder，target 显式 zip（跳过 DMG）。
+  # 注意：此通路不含 bundle.mjs 的产物机械校验（asar 闭包/越界 native），装包后首启自验。
+  log "--no-dmg：只出 zip（electron-builder --mac zip），跳过 DMG 与 bundle.mjs 收尾机械校验"
+  run_in_desktop pnpm prepare:runtime-assets || die "prepare:runtime-assets 失败"
+  run_in_desktop pnpm build || die "pnpm build 失败"
+  run_in_desktop pnpm exec electron-builder --config electron-builder.config.js --mac zip --arm64 || die "electron-builder（zip）失败（输出见上）"
+  ZIP_PATH="$(ls -t "$DIST_DIR/"*-mac-arm64.zip 2>/dev/null | head -1 || true)"
+  [[ -n "$ZIP_PATH" ]] && run_in_desktop node scripts/audit-bundle-size.mjs --artifact-path "$ZIP_PATH"
+else
+  run_in_src pnpm bundle:desktop -- --os mac --arch arm64 || {
+    # 失败兜底：DMG 阶段失败（受限沙箱 hdiutil 必败）时 zip/.app 往往已产出——有产物即算成功
+    APP_OK=0; ZIP_OK=0
+    [[ -d "$DIST_DIR/mac-arm64/$PRODUCT_NAME.app" ]] && APP_OK=1
+    NEW_ZIP="$(find "$DIST_DIR" -maxdepth 1 -name '*-mac-arm64.zip' -newermt "@$START_TS" 2>/dev/null | head -1 || true)"
+    [[ -n "$NEW_ZIP" ]] && ZIP_OK=1
+    if [[ $APP_OK -eq 1 || $ZIP_OK -eq 1 ]]; then
+      log "警告：bundle:desktop 整体失败（多见于 DMG 阶段，受限沙箱内 hdiutil 必败），但产物已生成："
+      [[ $APP_OK -eq 1 ]] && log "  unpacked app：$DIST_DIR/mac-arm64/$PRODUCT_NAME.app"
+      [[ $ZIP_OK -eq 1 ]] && log "  zip：$NEW_ZIP"
+      log "  （bundle.mjs 的收尾机械校验未执行，装包后首启自验；受限环境可用 --no-dmg 直接走 zip 通路）"
+    else
+      die "bundle:desktop 失败（输出见上）"
+    fi
+  }
+fi
 
 # ---- 产物路径 ----
 DIST_APP="$SRC/packages/desktop/dist/mac-arm64/$PRODUCT_NAME.app"

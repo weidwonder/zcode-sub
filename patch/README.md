@@ -20,7 +20,7 @@
 
 ```bash
 cd /Users/weidwonder/projects/zcode-sub
-# 0. 备份数据（984 MB 会话库在线备份，几分钟）
+# 0. 备份数据（约 1 GB 会话库在线备份，几分钟）
 patch/backup-zcode-data.sh
 # 1. 构建（默认 --identity preview：ZCode Preview.app，与正式版并存，强更门/自动更新天然跳过）
 patch/build-desktop.sh /Users/weidwonder/projects/ZCode
@@ -46,7 +46,8 @@ patch/install-desktop.sh /Users/weidwonder/projects/ZCode/packages/desktop/dist/
 # 1. 同步：fetch → local/patched-<上游SHA> 分支 → cherry-pick 补丁 → typecheck/lint
 patch/sync-upstream.sh /Users/weidwonder/projects/ZCode
 #    冲突时脚本停下并打印冲突文件清单；解决后在该仓库里 git cherry-pick --continue
-#    （补丁提交清单固定在 patch/series；不填则自动取 feat/local-bot-webhook 的非 chore(local-dw): 提交）
+#    （补丁提交清单固定在 patch/series；未固化时仅建立跟随上游的分支并打警告、不 cherry-pick；
+#     净提交 SHA 由派发者在补丁评审通过后固化）
 # 2. 在 local/patched-* 分支上重新构建安装（同流程一；build 脚本对任意 checkout 的目录都可用）
 # 3. 门检+备份再替换：
    node patch/verify-migration-checksums.mjs /Users/weidwonder/projects/ZCode   # checksum 门检，exit 0 才继续
@@ -85,3 +86,4 @@ cd /Users/weidwonder/projects/zcode-backups/<时间戳> && shasum -a 256 -c sha2
 5. **`.dmg` 安装**：支持（只读挂载提取 .app），优先用 build 输出的 unpacked .app 目录，更快。
 6. **本座位不能装**：`/Applications` 写权限受限的环境（dwc 座位）跑 install 会报 EACCES——按提示 `dwc grant /Applications` 后由用户环境执行。
 7. **Node 工具链**：首次构建会下载 Node 24.14.0 到 `/Users/weidwonder/projects/.toolchains/`（约 40 MB，npmmirror 镜像），不改全局 Node。
+8. **DMG 产物在受限沙箱环境不可得**：dwc 座位等 sandbox-exec 环境里 `hdiutil` 被拦截（ENXIO），electron-builder 的 DMG 阶段必败——属环境限制非脚本缺陷；zip 与 unpacked .app 不受影响。构建脚本提供 `--no-dmg` 显式走 zip 通路（跳过 DMG 与 bundle.mjs 收尾机械校验）；普通模式下 DMG 失败但 zip/.app 已产出时脚本打警告并算成功。`install-desktop.sh` 直接用 .app 产物，不依赖 DMG。
