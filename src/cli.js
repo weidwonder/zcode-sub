@@ -57,6 +57,8 @@ export async function runCli(argv) {
       return cmdStop(home, parseFlags(rest));
     case "daemon":
       return cmdDaemon(home);
+    case "mcp":
+      return cmdMcp();
     default:
       process.stdout.write(`${USAGE}\n`);
       process.exitCode = command && command !== "help" && command !== "--help" ? 1 : 0;
@@ -541,6 +543,13 @@ async function cmdResult(home, flags) {
     process.stdout.write(`${entry.text}\n`);
     if (entry.kind === "reply") process.stdout.write("\n");
   }
+}
+
+// ---------- mcp ----------
+
+async function cmdMcp() {
+  const { runMcpServer } = await import("./mcp.js");
+  await runMcpServer({});
 }
 
 // ---------- daemon ----------
