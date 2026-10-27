@@ -118,6 +118,20 @@ test("result：运行中明确说在跑", async () => {
   assert.match(result.stdout, /还在跑/u);
 });
 
+test("result：/status 解析失败时原样报原文，不猜", async () => {
+  fake.setReplyScript((text) => {
+    if (text === "/status") {
+      return { ok: true, replies: ["（上游改版后的未知格式）"] };
+    }
+    return undefined;
+  });
+  const result = await runCli(["result", "life-1"]);
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /无法判定状态/u);
+  assert.match(result.stdout, /未知格式/u);
+  fake.setReplyScript(() => undefined);
+});
+
 test("send：运行中被拒收（exit 4）并原样转达", async () => {
   fake.setStatusState("running");
   fake.setReplyScript((text) => {
