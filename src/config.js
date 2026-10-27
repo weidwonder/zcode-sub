@@ -1,9 +1,9 @@
 import { chmodSync, existsSync, readFileSync, renameSync, writeFileSync } from "node:fs";
-import { randomUUID } from "node:crypto";
-import { dirname, join } from "node:path";
+import { join, dirname } from "node:path";
 import { ensureHome } from "./home.js";
 
-// 桥接配置：setup 生成，daemon 与各命令共读。secret 与 GUI webhook bot 填的一致。
+// 桥接配置：setup 生成，CLI 与 MCP 进程共读。token 用于本机任务 API 鉴权。
+
 export function loadConfig(home) {
   const paths = ensureHome(home);
   if (!existsSync(paths.configFile)) return null;
@@ -11,11 +11,8 @@ export function loadConfig(home) {
     const parsed = JSON.parse(readFileSync(paths.configFile, "utf8"));
     if (typeof parsed !== "object" || parsed === null) return null;
     return {
-      botId: typeof parsed.botId === "string" ? parsed.botId : "",
-      secret: typeof parsed.secret === "string" ? parsed.secret : "",
-      userId: typeof parsed.userId === "string" && parsed.userId ? parsed.userId : "zcode-sub",
-      daemonPort: Number.isInteger(parsed.daemonPort) ? parsed.daemonPort : 0,
-      ingressPort: Number.isInteger(parsed.ingressPort) ? parsed.ingressPort : 47821,
+      apiPort: Number.isInteger(parsed.apiPort) ? parsed.apiPort : 47821,
+      token: typeof parsed.token === "string" ? parsed.token : "",
     };
   } catch {
     return null;
@@ -23,17 +20,10 @@ export function loadConfig(home) {
 }
 
 export function createInitialConfig() {
-  return {
-    botId: "",
-    secret: randomUUID().replace(/-/gu, ""),
-    userId: "zcode-sub",
-    // 端口固定：GUI bot 配置里的 webhookUrl 是持久的，端口漂移会让它失效。
-    daemonPort: 47899,
-    ingressPort: 47821,
-  };
+  return { apiPort: 47821, token: "" };
 }
 
-// 0600 原子写：信箱与配置里的任务文本不扩大可读面。
+// 0600 原子写：token 不扩大可读面。
 export function saveConfig(home, config) {
   const paths = ensureHome(home);
   atomicWriteJson(paths.configFile, config, { mode: 0o600 });

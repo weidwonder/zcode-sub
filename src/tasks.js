@@ -2,14 +2,15 @@ import { existsSync, readFileSync } from "node:fs";
 import { ensureHome } from "./home.js";
 import { atomicWriteJson } from "./config.js";
 
-// 任务登记表：name → 元数据。isCurrent 标记 bot 会话当前任务（单 bot 单会话，spec D-01）。
+// 任务登记表：name → { taskId, workspacePath, createdAt, lastStatus, eventsSeq }。
+// taskId 指向 ZCode 本机任务 API 的任务；eventsSeq 只反映本机已见的事件数。
 
 export function loadTasks(home) {
   const paths = ensureHome(home);
   if (!existsSync(paths.tasksFile)) return { tasks: {} };
   try {
     const parsed = JSON.parse(readFileSync(paths.tasksFile, "utf8"));
-    if (typeof parsed === "object" && parsed !== null && typeof parsed.tasks === "object") {
+    if (typeof parsed === "object" && parsed !== null && typeof parsed.tasks === "object" && parsed.tasks !== null) {
       return { tasks: parsed.tasks };
     }
   } catch {
@@ -24,29 +25,41 @@ export function saveTasks(home, store) {
   return store;
 }
 
-export function upsertTask(home, name, patch) {
+export function registerTask(home, name, { taskId, workspacePath }) {
   const store = loadTasks(home);
-  const previous = store.tasks[name] ?? {};
-  // 新任务成为 bot 会话当前任务，旧任务全部失格（/new 已重置会话）。
-  if (patch.isCurrent) {
-    for (const task of Object.values(store.tasks)) task.isCurrent = false;
+  if (store.tasks[name]) {
+    const err = new Error(`zcode_name_taken: 任务名 "${name}" 已存在，换一个名字`);
+    err.code = "zcode_name_taken";
+    err.exitCode = 7;
+    throw err;
   }
   store.tasks[name] = {
-    cwd: patch.cwd ?? previous.cwd ?? "",
-    startedAt: patch.startedAt ?? previous.startedAt ?? Date.now(),
-    lastActivityAt: patch.lastActivityAt ?? Date.now(),
-    lastStatus: patch.lastStatus ?? previous.lastStatus ?? "dispatched",
-    isCurrent: patch.isCurrent ?? previous.isCurrent ?? false,
+    taskId,
+    workspacePath,
+    createdAt: Date.now(),
+    lastStatus: "dispatched",
+    eventsSeq: 0,
   };
   saveTasks(home, store);
   return store.tasks[name];
 }
 
-export function getCurrentTask(home) {
+export function updateTask(home, name, patch) {
   const store = loadTasks(home);
-  return Object.entries(store.tasks).find(([, task]) => task.isCurrent)?.[0] ?? null;
+  const task = store.tasks[name];
+  if (!task) return null;
+  if (patch.lastStatus !== undefined) task.lastStatus = patch.lastStatus;
+  if (patch.eventsSeq !== undefined) task.eventsSeq = patch.eventsSeq;
+  saveTasks(home, store);
+  return task;
 }
 
 export function getTask(home, name) {
   return loadTasks(home).tasks[name] ?? null;
+}
+
+export function listTaskNames(home) {
+  return Object.entries(loadTasks(home).tasks)
+    .sort(([, a], [, b]) => (a.createdAt ?? 0) - (b.createdAt ?? 0))
+    .map(([name]) => name);
 }
