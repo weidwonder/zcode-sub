@@ -15,6 +15,10 @@
 |---|---|---|
 | 【能力，如 背单词记录】 | 【现在该改/该调的那一个，如 POST /v2/word/record 或 src/word/record.ts】 | 【相似但不该用的旧实现，如 POST /v1/word/record；确实没有就写 无】 |
 
+| Capability | 权威实现 | 陷阱项（废弃或中间产物） |
+|---|---|---|
+| ZCode webhook bot 桥接事实（入站/出站/会话语义） | 外部仓 ZCode，见 `engineering-context/dependencies/ZCode/bots-webhook.md` | `/cancel` 是取消选择卡不是取消任务（用 `/stop`）；运行中发正文被拒无私聊 steer；同步 replies 空不代表失败；messageId 2 分钟幂等 |
+
 ## 能力表（完整形态）
 
 | Capability | 业务含义 | 权威仓库 | 权威接口(含版本) | 废弃/中间产物替代 | 兼容窗口 | owner | 测试入口 | freshness(最近确认) | 理由链 |
