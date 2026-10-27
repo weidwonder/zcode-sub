@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # 跟随 ZCode 上游：fetch → 从 origin/main 建补丁分支 → cherry-pick 本地补丁提交 → typecheck/lint。
 # - 补丁提交来源：本仓 patch/series（一行一个 SHA；'#' 注释行与空行忽略；'! <命令>' 行声明 pick 后要跑的自定义校验）
-#   series 为空/不存在时，自动取 <源码仓> feat/local-bot-webhook 分支上非 chore(local-dw): 前缀的提交
+#   净提交 SHA 由派发者在补丁评审通过后固化于此；未固化时 sync-upstream.sh 仅建立跟随上游的分支，不 cherry-pick
 # - cherry-pick 冲突即停（退出码 4），只打印冲突文件清单，不做任何 reset/清理
 # - git 一律带 -c safe.directory='*'
 set -euo pipefail
@@ -61,7 +61,7 @@ fi
 # ---- 补丁提交序列 ----
 picks=()
 custom_checks=()
-if [[ -f "$SERIES_FILE" ]] && grep -Ev '^\s*(#|$)' "$SERIES_FILE" | grep -qv '^!'; then
+if [[ -f "$SERIES_FILE" ]]; then
   while IFS= read -r line; do
     [[ -z "${line// /}" || "$line" == \#* ]] && continue
     if [[ "$line" == '!'* ]]; then
@@ -71,16 +71,9 @@ if [[ -f "$SERIES_FILE" ]] && grep -Ev '^\s*(#|$)' "$SERIES_FILE" | grep -qv '^!
     fi
   done < "$SERIES_FILE"
   log "补丁来源：$SERIES_FILE"
-else
-  log "补丁来源：feat/local-bot-webhook 上非 chore(local-dw): 提交（$SERIES_FILE 为空或不存在）"
-  if g show-ref --verify --quiet refs/heads/feat/local-bot-webhook; then
-    while IFS=' ' read -r sha subject; do
-      [[ "$subject" == chore\(local-dw\):* ]] && continue
-      picks+=("$sha")
-    done < <(g log --reverse --format='%H %s' origin/main..feat/local-bot-webhook)
-  else
-    log "警告：feat/local-bot-webhook 分支不存在，无补丁可 pick（仅建立跟随上游的分支）"
-  fi
+fi
+if [[ ${#picks[@]} -eq 0 ]]; then
+  log "警告：patch/series 未列出净提交 SHA（由派发者在补丁评审通过后固化）；本轮仅建立跟随上游的分支，不 cherry-pick。"
 fi
 
 log "将 cherry-pick ${#picks[@]} 个提交："
@@ -111,6 +104,8 @@ for p in ${picks[@]+"${picks[@]}"}; do
   log "> git cherry-pick $p"
   if ! g cherry-pick "$p"; then
     log "cherry-pick 冲突，停止。冲突文件："
+    log "当前状态："
+    g status --short
     g diff --name-only --diff-filter=U | sed 's/^/  冲突: /'
     log "现场已保留（分支 ${BRANCH}）：解决冲突后 git cherry-pick --continue，或 git cherry-pick --abort 放弃本轮。"
     exit 4

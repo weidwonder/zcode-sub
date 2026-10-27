@@ -71,15 +71,15 @@ patch/rollback-desktop.sh --from zcode-backups/apps/ZCode-3.16.3-20261027-220000
 # 备份完整性校验
 cd /Users/weidwonder/projects/zcode-backups/<时间戳> && shasum -a 256 -c sha256sums.txt
 # 退出 ZCode 后，用 zcode/ 下同名文件覆盖 ~/.zcode 对应文件（sqlite-backup 产物是自包含快照）
-# 例：cp zcode-backups/<时间戳>/zcode/v2/tasks-index.sqlite ~/.zcode/v2/tasks-index.sqlite
+# 例：cp zcode/v2/tasks-index.sqlite ~/.zcode/v2/tasks-index.sqlite
 ```
 
 数据恢复是覆盖用户数据的动作，工具链只提供备份与校验，**不自动执行**。
 
 ## 已知风险与限制
 
-1. **强更门（仅 production 身份）**：服务端 `/api/v1/client/configs` 下发 `forceUpdate.minimalVersion` 高于 3.16.2 时，补丁版启动即被拦（弹窗只能升级或退出；断网可绕过但应用不可用）。Preview 身份不受影响（官方代码显式跳过）。
-2. **签名**：开源构建产物未签名（macOS 签名默认关），install 默认 ad-hoc 重签。CUA（computer use）的辅助功能/录屏授权绑定签名，替换后首次使用需重新授权；不用 CUA 则无感。
+1. **强更门（仅 production 身份）**：服务端 `/api/v1/client/configs` 下发 `forceUpdate.minimalVersion` 高于 3.16.2 时，补丁版启动即被拦（弹窗只能升级或退出；断网可绕过但应用不可用）。Preview 身份不受影响（官方代码显式跳过）。（报告 §3）
+2. **签名**：开源构建产物未签名（macOS 签名默认关），install 默认 ad-hoc 重签。CUA（computer use）的辅助功能/录屏授权绑定签名，替换后首次使用需重新授权；不用 CUA 则无感。（报告 §2.2）
 3. **CUA helper 可能缺**：开源构建在无私有 producer 时不随包携带 computer-use helper（报告 §2.2）——依赖 CUA 的场景先实机验证。
 4. **降级数据损耗**：3.16.2 打开 3.16.3 写过的数据已验证安全（报告 §1），但补丁版使用期间修改设置会抹掉 3.16.3 新增的设置键；尽量少动设置。
 5. **`.dmg` 安装**：支持（只读挂载提取 .app），优先用 build 输出的 unpacked .app 目录，更快。

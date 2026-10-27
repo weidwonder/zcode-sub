@@ -9,7 +9,7 @@
 import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { execFileSync } from "node:child_process";
-import { homedir } from "node:os";
+import { userInfo } from "node:os";
 import { join } from "node:path";
 
 const args = process.argv.slice(2);
@@ -19,8 +19,8 @@ if (!src) {
   process.exit(1);
 }
 const rootFlag = args.find((a) => a.startsWith("--zcode-root"));
-const zcodeRoot = rootFlag ? rootFlag.split("=")[1] ?? args[args.indexOf(rootFlag) + 1] : join(homedir(), ".zcode");
-// 座位/脚本环境 HOME 可能被重定向；homedir() 取到的是真实家目录（任务书口径）
+const zcodeRoot = rootFlag ? rootFlag.split("=")[1] ?? args[args.indexOf(rootFlag) + 1] : join(userInfo().homedir, ".zcode");
+// 座位/脚本环境 $HOME 可能被重定向；userInfo().homedir 取系统用户的真实家目录、不读 $HOME（homedir() 实测会落到座位目录，不可用）
 const sha256 = (s) => createHash("sha256").update(s).digest("hex");
 const jsha = (arr) => sha256(JSON.stringify(arr));
 
@@ -30,6 +30,39 @@ function tpl(path, constName) {
   if (decl === -1) throw new Error(`找不到 ${constName} in ${path}`);
   const tick = text.indexOf("`", decl);
   return text.slice(tick + 1, text.indexOf("`", tick + 1));
+}
+
+// 普通双引号字符串常量（如 INITIAL_WORKSPACE_ORDER_SQL），同样从源码文本提取
+function stringConst(path, constName) {
+  const text = readFileSync(path, "utf8");
+  const decl = text.indexOf(`const ${constName} =`);
+  if (decl === -1) throw new Error(`找不到 ${constName} in ${path}`);
+  const open = text.indexOf('"', decl);
+  const close = open === -1 ? -1 : text.indexOf('"', open + 1);
+  if (close === -1) throw new Error(`提取 ${constName} 失败 in ${path}`);
+  return text.slice(open + 1, close);
+}
+
+// 定位 `id: "<id>"` 所在段内 from 标记之后到 to 首次出现之间的原始文本；找不到即抛错（门检失败，不静默用旧值）
+// includeTo=true 时把 to 本身含进结果（如 checksumInput 的收口 `]`）
+function segmentText(text, path, id, from, to, includeTo = false) {
+  const anchor = text.indexOf(`id: "${id}"`);
+  if (anchor === -1) throw new Error(`在 ${path} 找不到迁移 ${id}`);
+  const start = text.indexOf(from, anchor);
+  const end = start === -1 ? -1 : text.indexOf(to, start + from.length);
+  if (end === -1) throw new Error(`在 ${path} 提取 ${id} 失败（锚点 ${from}…${to}）`);
+  return text.slice(start + from.length, includeTo ? end + to.length : end);
+}
+
+// 迁移 sql 模板串还原：${CONST} 换常量值、字面 \n 换真换行、trim，与运行时拼装结果一致
+function resolveSqlTemplate(raw, consts) {
+  return raw
+    .replace(/\$\{(\w+)\}/g, (whole, name) => {
+      if (!(name in consts)) throw new Error(`resolveSqlTemplate：缺常量 ${name}（${whole}）`);
+      return consts[name];
+    })
+    .replace(/\\n/g, "\n")
+    .trim();
 }
 
 function readLedger(db, table) {
@@ -48,6 +81,8 @@ function check(label, id, sum, ledger) {
   bad++;
 }
 
+// 任一环节抛错（源码锚点找不到、文件缺失、库打不开）都按门检失败优雅退出，不抛未捕获栈
+try {
 // ---- 1) 会话库（schema_migration；模板条目精确算，动态构造条目列出待人工）----
 {
   const text = readFileSync(`${src}/apps/zcode-cli/packages/adapters/src/storage/session-store/migrations.ts`, "utf8");
@@ -88,15 +123,23 @@ function check(label, id, sum, ledger) {
     ["automations", "project_id"], ["automations", "host_id"], ["automations", "additional_directories"],
     ["off_peak_tasks", "project_id"], ["off_peak_tasks", "host_id"], ["off_peak_tasks", "additional_directories"],
   ];
-  check("tasks", "0002_provider_selection", jsha(["legacy-automation-selection-v1", "no-provider-for-legacy-off-peak-v1"]), ledger);
+  const tasksMigPath = `${src}/packages/services/src/session/tasksDatabase/migrations.ts`;
+  const tasks0002Input = JSON.parse(segmentText(readFileSync(tasksMigPath, "utf8"), tasksMigPath, "0002_provider_selection", "checksumInput: ", "]", true));
+  check("tasks", "0002_provider_selection", jsha(tasks0002Input), ledger);
   check("tasks", "0003_official_glm_selection", jsha([glmSql]), ledger);
   check("tasks", "0004_project_execution_scopes", jsha([executionColumns, "nullable-text-v1"]), ledger);
   check("tasks", "0006_task_group_admissions", jsha([admissionsSql]), ledger);
   console.log("SKIP-DYN tasks 0001_adopt_task_schema（多常量拼装；用表结构对比代替，见报告 §1.3）");
+  // 豁免名单出处：migrations.ts 的 prepareMigrations controller-remote/source-server 分支（非 base scope）
+  const otherScopeIds = ["0004_controller_remote_identity", "0005_source_server_workspace_schema"];
   for (const id of ledger.keys()) {
-    if (!["0002_provider_selection", "0003_official_glm_selection", "0004_project_execution_scopes", "0006_task_group_admissions", "0001_adopt_task_schema"].includes(id)) {
-      console.log(`EXTRA  tasks ${id}（账本有、源码 base 清单无；若属 source-server/controller-remote scope 属正常，否则人工确认）`);
+    if (["0002_provider_selection", "0003_official_glm_selection", "0004_project_execution_scopes", "0006_task_group_admissions", "0001_adopt_task_schema"].includes(id)) continue;
+    if (otherScopeIds.includes(id)) {
+      console.log(`SKIP-SCOPE tasks ${id}（非 base scope，正常）`);
+      continue;
     }
+    console.log(`EXTRA  tasks ${id}（账本有、源码 base 清单无——降级后此项不被校验，须人工确认）`);
+    bad++;
   }
 }
 
@@ -104,13 +147,24 @@ function check(label, id, sum, ledger) {
 {
   const ledger = readLedger(`${zcodeRoot}/v2/tasks-index.sqlite`, "schema_migration");
   const ws = tpl(`${src}/packages/services/src/project-storage/default-workspace/migration.ts`, "DEFAULT_WORKSPACE_CANDIDATES_SQL");
-  const order = "ALTER TABLE remote_project_entries ADD COLUMN initial_position INTEGER"; // 普通字符串常量（migration.ts:4）
-  check("project", "0006_default_workspace_tasks",
-    sha256(`${ws}\n-- v1 clear project ownership and soft-delete the unedited system container; preserve task facts`.trim()), ledger);
-  check("project", "0007_initial_workspace_order",
-    sha256(`${order}\n-- seed mixed order only when 0005 runs in this transaction`.trim()), ledger);
+  const order = stringConst(`${src}/packages/services/src/project-storage/migration-order/migration.ts`, "INITIAL_WORKSPACE_ORDER_SQL");
+  const pIndexPath = `${src}/packages/services/src/project-storage/index.ts`;
+  const pText = readFileSync(pIndexPath, "utf8");
+  const sql06 = resolveSqlTemplate(segmentText(pText, pIndexPath, "0006_default_workspace_tasks", "sql: `", "`"), { DEFAULT_WORKSPACE_CANDIDATES_SQL: ws });
+  const sql07 = resolveSqlTemplate(segmentText(pText, pIndexPath, "0007_initial_workspace_order", "sql: `", "`"), { INITIAL_WORKSPACE_ORDER_SQL: order });
+  check("project", "0006_default_workspace_tasks", sha256(sql06), ledger);
+  check("project", "0007_initial_workspace_order", sha256(sql07), ledger);
   console.log("SKIP-DYN project 0005_projects（拼装注释含 TASK_PROJECT_COLUMNS；用表结构对比代替）");
+  for (const id of ledger.keys()) {
+    if (["0005_projects", "0006_default_workspace_tasks", "0007_initial_workspace_order"].includes(id)) continue;
+    console.log(`EXTRA  project ${id}（账本有、源码清单无——降级后此项不被校验，须人工确认）`);
+    bad++;
+  }
 }
 
+} catch (err) {
+  console.error(`错误：${err.message}`);
+  process.exit(1);
+}
 console.log(bad === 0 ? "\n结论：可精确验证项全部匹配（SKIP-DYN 条目见报告论证）。" : `\n结论：${bad} 处不匹配/账本超集——降级有风险，先看报告 §1.5 处置。`);
 process.exit(bad === 0 ? 0 : 1);

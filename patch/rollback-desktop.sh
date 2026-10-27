@@ -51,6 +51,17 @@ esac
 SNAP_VER="$(plutil -extract CFBundleShortVersionString raw "$SNAP/Contents/Info.plist" 2>/dev/null || echo '?')"
 log "恢复：${SNAP}（版本 ${SNAP_VER}）→ $TARGET"
 
+log "本脚本由用户本人在本机终端直接运行（需要 /Applications 写权限）。"
+log "执行计划："
+if [[ -d "$TARGET" ]]; then
+  log "  1. 运行检测（在运行则退出，不杀进程）"
+  log "  2. 保留当前包：mv '$TARGET' -> '$APPS_DIR/rolledback-from-$(basename "$TARGET" .app)-<当前版本>-<时间戳>.app'"
+  log "  3. 恢复快照：mv '$SNAP' -> '$TARGET'"
+else
+  log "  1. 运行检测（目标不存在，跳过）"
+  log "  2. 恢复快照：mv '$SNAP' -> '$TARGET'"
+fi
+
 # ---- 运行检测 ----
 if [[ -d "$TARGET" ]]; then
   if command -v pgrep >/dev/null 2>&1; then

@@ -1,7 +1,11 @@
 # ZCode 本地补丁提交清单（patch/series）
 # 一行一个提交 SHA，按应用顺序排列；'#' 开头与空行忽略。
 # '! <命令>' 行：cherry-pick 全部通过后要跑的自定义校验命令（如补丁契约测试）。
-# 本文件为空（无 SHA 行）时，sync-upstream.sh 自动取 ZCode 仓库 feat/local-bot-webhook
-# 分支上非 chore(local-dw): 前缀的提交。
-# 当前状态（2026-10-27）：feat/local-bot-webhook 上只有 chore(local-dw): 前缀的本地初始化
-# 提交，功能补丁尚未落分支；功能补丁落分支后按需把 SHA 固定到这里。
+# 净提交 SHA 由派发者在补丁评审通过后固化于此——上游 feat/local-bot-webhook 分支含
+# 「v1 webhook bot 引入 + revert」对冲提交对（2026-10-28 时点 7 个功能提交），
+# sync-upstream.sh 不做自动提取、只认本文件显式列出的净提交。
+# 本文件未列出 SHA 时：sync-upstream.sh 仅建立跟随上游的分支并打警告，不 cherry-pick。
+#
+# 示例（机制演示，实际 SHA 以派发者固化为准）：
+#   7517d67b1234567890abcdef1234567890abcdef12
+#   ! pnpm --filter @zcode/desktop test -- --run webhook-ingress

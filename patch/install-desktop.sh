@@ -64,6 +64,29 @@ esac
 log "产物：${SRC_APP}（$BUNDLE_NAME ${APP_VERSION}，${BUNDLE_ID}）"
 log "安装目标：$TARGET"
 
+log "本脚本由用户本人在本机终端直接运行（需要 /Applications 写权限）。"
+log "执行计划："
+if [[ -d "$TARGET" ]]; then
+  log "  1. 运行检测（在运行则退出，不杀进程）"
+  log "  2. 备份现有包：mv '$TARGET' -> '$BACKUP_ROOT/apps/$(basename "$TARGET" .app)-<旧版本>-<时间戳>.app'"
+  log "  3. 拷入新包：ditto '$SRC_APP' '$TARGET'"
+  log "  4. 去隔离：xattr -dr com.apple.quarantine '$TARGET'"
+  if [[ $DO_SIGN -eq 1 ]]; then
+    log "  5. ad-hoc 重签：codesign --force --deep --sign - '$TARGET'"
+  else
+    log "  5. 跳过签名（--no-sign）"
+  fi
+else
+  log "  1. 运行检测（目标不存在，跳过）"
+  log "  2. 拷入新包：ditto '$SRC_APP' '$TARGET'"
+  log "  3. 去隔离：xattr -dr com.apple.quarantine '$TARGET'"
+  if [[ $DO_SIGN -eq 1 ]]; then
+    log "  4. ad-hoc 重签：codesign --force --deep --sign - '$TARGET'"
+  else
+    log "  4. 跳过签名（--no-sign）"
+  fi
+fi
+
 # ---- 运行检测 ----
 if [[ -d "$TARGET" ]]; then
   if command -v pgrep >/dev/null 2>&1; then

@@ -22,6 +22,14 @@ NODE_MIRRORS=(
 log() { printf '[patch] %s\n' "$*"; }
 die() { log "错误：$*"; exit 1; }
 
+# ---- 写权限预检（受限环境给 dwc grant 提示，不绕过）----
+ensure_writable() { # $1=将写入的目录 $2=用途
+  local d="$1"
+  if ! mkdir -p "$d" 2>/dev/null || [[ -e "$d" && ! -w "$d" ]]; then
+    die "无权限写入：${d}（$2）。若在 dwc 座位内，请在座位外执行：dwc grant $d"
+  fi
+}
+
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --identity) IDENTITY="$2"; shift 2 ;;
@@ -41,6 +49,7 @@ NODE_BIN="$TOOLCHAIN_ROOT/node-v$NODE_VERSION/bin/node"
 if [[ ! -x "$NODE_BIN" ]]; then
   TARBALL="node-v$NODE_VERSION-darwin-arm64.tar.gz"
   log "Node $NODE_VERSION 不存在，准备下载安装到 $TOOLCHAIN_ROOT"
+  [[ $DRY_RUN -eq 1 ]] || ensure_writable "$TOOLCHAIN_ROOT" "Node 工具链目录"
   if [[ $DRY_RUN -eq 1 ]]; then
     log "dry-run：将依次尝试 ${NODE_MIRRORS[*]}/v$NODE_VERSION/$TARBALL 并解压到 $TOOLCHAIN_ROOT"
   else
@@ -59,13 +68,6 @@ if [[ ! -x "$NODE_BIN" ]]; then
     [[ -x "$NODE_BIN" ]] || die "解压后仍未找到 $NODE_BIN"
   fi
 fi
-# ---- 写权限预检（受限环境给 dwc grant 提示，不绕过）----
-ensure_writable() { # $1=将写入的目录 $2=用途
-  local d="$1"
-  if ! mkdir -p "$d" 2>/dev/null || [[ -e "$d" && ! -w "$d" ]]; then
-    die "无权限写入：${d}（$2）。若在 dwc 座位内，请在座位外执行：dwc grant $d"
-  fi
-}
 export PATH="$TOOLCHAIN_ROOT/node-v$NODE_VERSION/bin:$PATH"
 log "node: $(command -v node) ($(node --version 2>/dev/null || echo 未验证))"
 
@@ -90,8 +92,9 @@ ensure_pnpm() {
     export PATH="$TOOLCHAIN_ROOT/node-v$NODE_VERSION/bin:$PATH"
     return 0
   fi
+  ensure_writable "$TOOLCHAIN_ROOT" "pnpm 工具链目录"
   "$TOOLCHAIN_ROOT/node-v$NODE_VERSION/bin/npm" install --global --prefix "$PNPM_HOME_TC" "pnpm@$PNPM_VERSION" \
-    || die "pnpm@$PNPM_VERSION 安装失败（网络？）；也可自行安装后重跑"
+    || die "pnpm@$PNPM_VERSION 安装失败（网络或权限；权限问题见上方提示）；也可自行安装后重跑"
   export PATH="$PNPM_HOME_TC/bin:$PATH"
   [[ "$(pnpm --version)" == "$PNPM_VERSION" ]] || die "工具链 pnpm 版本异常：$(pnpm --version)"
   log "pnpm: $(command -v pnpm) ($(pnpm --version))［工具链副本］"
@@ -133,7 +136,9 @@ DIST_APP="$SRC/packages/desktop/dist/mac-arm64/$PRODUCT_NAME.app"
 log "完成。产物："
 log "  unpacked app：$DIST_APP"
 if [[ $DRY_RUN -eq 0 ]]; then
-  DMG="$(ls -t "$SRC/packages/desktop/dist/"*.dmg 2>/dev/null | head -1 || true)"
-  [[ -n "$DMG" ]] && log "  dmg：$DMG"
+  for ext in dmg zip; do
+    f="$(ls -t "$SRC/packages/desktop/dist/"*.$ext 2>/dev/null | head -1 || true)"
+    [[ -n "$f" ]] && log "  ${ext}：$f"
+  done
   log "下一步：patch/install-desktop.sh '$DIST_APP'"
 fi

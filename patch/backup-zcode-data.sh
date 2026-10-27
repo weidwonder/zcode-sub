@@ -5,17 +5,22 @@
 # - 生成 manifest.json + sha256sums.txt；不修改源数据；目标已存在则拒绝（防覆盖旧备份）
 set -euo pipefail
 
+log() { printf '[patch] %s\n' "$*"; }
+die() { log "错误：$*"; exit 1; }
+
 # ---- 参数 ----
-BACKUP_DIR="${1:-}"
+BACKUP_DIR=""
 DRY_RUN=0
 MINIMAL=0
-for arg in "$@"; do
-  case "$arg" in
-    --dry-run) DRY_RUN=1 ;;
-    --minimal) MINIMAL=1 ;;
-    -h|--help)
-      sed -n '2,10p' "$0"; exit 0 ;;
-    *) ;;
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --dry-run) DRY_RUN=1; shift ;;
+    --minimal) MINIMAL=1; shift ;;
+    -h|--help) sed -n '2,10p' "$0"; exit 0 ;;
+    -*) die "未知参数：$1" ;;
+    *)
+      [[ -n "$BACKUP_DIR" ]] && die "只接受一个位置参数（备份目录），已收到：$BACKUP_DIR 与 $1"
+      BACKUP_DIR="$1"; shift ;;
   esac
 done
 
@@ -24,9 +29,6 @@ ZCODE_ROOT="${ZCODE_ROOT:-$REAL_HOME/.zcode}"
 BACKUP_ROOT="${ZCODE_BACKUP_ROOT:-$REAL_HOME/projects/zcode-backups}"
 STAMP="$(date +%Y%m%d-%H%M%S)"
 BACKUP_DIR="${BACKUP_DIR:-$BACKUP_ROOT/$STAMP}"
-
-log() { printf '[patch] %s\n' "$*"; }
-die() { log "错误：$*"; exit 1; }
 
 # ---- 写权限预检（受限环境给 dwc grant 提示，不绕过）----
 ensure_writable() { # $1=将写入的目录 $2=用途
