@@ -128,3 +128,16 @@ test/helpers/fake-zcode.js  startFakeZcode({script}) -> {port, ingressUrl, calls
 
 ## 替换清单核销
 无被取代物（新仓首版）。
+
+## 附：v2 变更执行记录（2026-10-27，传输层换本机任务 API）
+
+上面 Task 1–7 按 v1（webhook bot）执行完毕后，方案变更为契约 v2（spec §14）。v2 实际执行按用户模型分工：**haiku 内部子代理写代码与测试，本会话拆分/审读/验证/修正**，四批：
+
+| 批 | 内容（haiku） | 审读结论 | 提交 |
+|---|---|---|---|
+| 1 | `src/api.js` + 假端点 v2 重写 + `test/api.test.js`（8 用例） | 一次通过；报备 5 条决定均合理 | 63908e8 |
+| 2 | config/tasks/mailbox 重写 + `test/state.test.js`（7 用例）+ 删 ingress/daemon/ensure | 一次通过；报备 5 条决定均合理 | 63908e8 |
+| 3 | `src/cli.js` v2 全量重写 + `test/cli.test.js`（17 用例）+ home.js 清 pathsOf | 一次通过；本会话修 2 处（USAGE 去 `--write-switch`、开关文件 port 整数校验） | a7271fb |
+| 4 | `src/mcp.js` 直写信箱 + `test/mcp.test.js`（5 用例）+ 冒烟脚本 v2 | 一次通过（含报备的一个真 bug 自修：handleRequest 需保持 async） | a7271fb |
+
+无「同处返工两次不过」的 haiku 产出，无需本会话接管改写。文档（spec/README/Skill/CHANGELOG/覆盖度/依赖声明/事实卡）由本会话直接更新。
