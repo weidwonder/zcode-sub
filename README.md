@@ -1,14 +1,15 @@
 # zcode-sub
 
-把 ZCode 桌面版（Webhook Bot 通道）当作 Claude Code 的子代理使用：任务派发、实时补充消息、接收子代理主动回复、取最终回复、接续任务。任务实际跑在 ZCode GUI 里，全程可见。
+把 ZCode 桌面版当作 Claude Code 的子代理使用：任务派发、运行中补充消息（排队/引导）、接收子代理主动回复、取最终回复、接续对话、停止。任务是 ZCode 里的**普通对话**——GUI 实时可见、可并行多开、可在 GUI 里继续操作。
 
 ```
-Claude Code ──run/send/resume/stop──▶ ZCode 入站端点(127.0.0.1) ──▶ ZCode GUI 会话
-Claude Code ◀──wait/result────────── 桥接 daemon ◀──出站回调─────── ZCode webhook bot
+Claude Code ──run/send/resume/stop──▶ ZCode 本机任务 API(127.0.0.1, 契约 v2) ──▶ ZCode GUI 普通对话
+Claude Code ◀──wait（events 长轮询 + 信箱）───────────────────────────────────┘
+ZCode 拉起 zcode-sub mcp ──reply_to_parent──▶ 信箱文件（wait 读取）
 ```
 
 - 运行环境：Node ≥ 22，零运行时依赖，ESM。
-- 上游依赖：ZCode 桌面版装了「本机 Webhook Bot 入站端点」补丁（契约 v1），且 Bots 设置里允许新建 Webhook 类型 bot。上游事实卡：`engineering-context/dependencies/ZCode/bots-webhook.md`。
+- 上游依赖：ZCode 桌面版装了「本机任务 API」补丁（契约 v2，开关文件 `~/.zcode/v2/local-task-api.json`）。上游事实卡：`engineering-context/dependencies/ZCode/bots-webhook.md`（v1 调查结论与决策记录）。
 
 ## 安装
 
@@ -21,44 +22,44 @@ npm link            # 或把 bin/zcode-sub.js 加入 PATH；本仓库不发布 n
 
 ## 一次性配置
 
-1. 启动 ZCode 桌面版（已装补丁）。若开关文件不存在，`zcode-sub setup` 会打印需要创建的文件与内容（`~/.zcode/v2/bot-webhook-ingress.json`，`{"enabled": true, "port": 47821}`），创建后重启 ZCode；本机可执行 `dwc grant` 授权时也可加 `--write-switch` 自动写。
-2. 运行 `zcode-sub setup`：它检查入站端点健康、起桥接 daemon、打印 GUI 步骤。
-3. 按 setup 输出在 ZCode GUI 建 Webhook bot（webhookUrl 填 daemon 地址，secret 用 setup 打印的），把 bot id 填回 `zcode-sub setup --bot-id <id>`。
-4. 在 GUI 该 bot 页点「生成绑定码」，30 秒内执行 `zcode-sub setup --bind-code <CODE>`。
-5. （可选，启用子代理主动汇报）把 setup 打印的 `mcp.servers` JSON 片段合入 ZCode 的 MCP 配置（需 `features.mcp`）。
+1. 运行 `zcode-sub setup`：
+   - ZCode 侧开关文件 `~/.zcode/v2/local-task-api.json` 不存在时，setup 会生成 token 并以 0600 写入（`{"enabled":true,"port":47821,"token":...}`），**写完需重启 ZCode 生效**；已存在则读回 token/端口；
+   - 检查本机任务 API 健康；
+   - 打印把 `zcode-sub mcp` 配进 ZCode `mcp.servers` 的 JSON 片段（需 `features.mcp`）。
+2. （可选）在 ZCode 里打开常驻工作区——`run --cwd` 的工作区必须在 ZCode 中打开，否则报 `zcode_workspace_not_open`（409）。
 
-状态目录默认 `~/.zcode-sub`（真实用户家目录，`os.userInfo().homedir`），用环境变量 `ZCODE_SUB_HOME` 覆盖；若该目录不可写，setup 会提示执行 `dwc grant ~/.zcode-sub`。桥接 daemon 只监听 `127.0.0.1`，出站与内部接口都校验 `x-zcode-bot-secret`。
+状态目录默认 `~/.zcode-sub`（真实用户家目录，`os.userInfo().homedir`），环境变量 `ZCODE_SUB_HOME` 覆盖；开关文件定位可用 `ZCODE_DATA_BASE_DIR` 覆盖。目录不可写时 setup 会提示 `dwc grant`。全部通信只走 127.0.0.1，鉴权为开关文件里的 token（Bearer）。
 
 ## 命令
 
 | 命令 | 作用 |
 |---|---|
-| `zcode-sub setup [--bot-id …] [--bind-code …] [--ingress-port …] [--daemon-port …] [--secret …] [--write-switch]` | 检查/配置并打印 GUI 步骤 |
-| `zcode-sub run "<任务>" --cwd <绝对路径> [--name <名>]` | 派发任务；stdout 一行 JSON |
-| `zcode-sub wait <name> [--timeout 秒]` | 阻塞等新消息（超时输出 TIMEOUT，退出码 2） |
-| `zcode-sub result <name>` | 最终回复全文 + 状态；还在跑会明确说 |
-| `zcode-sub send <name> "<消息>"` | 补充消息；任务已结束则等价续聊 |
-| `zcode-sub resume <name> "<继续文本>"` | 原会话续聊 |
-| `zcode-sub stop <name>` | 取消任务（ZCode `/stop`） |
-| `zcode-sub list [--json]` | 任务列表 |
-| `zcode-sub mcp` | stdio MCP server（`reply_to_parent` 工具），一般由 ZCode 拉起 |
-| `zcode-sub daemon` | 出站接收常驻进程，其它命令需要时自动拉起 |
+| `zcode-sub setup [--api-port …]` | 写/读开关文件、健康检查、打印 MCP 配置 |
+| `zcode-sub run "<任务>" --cwd <绝对路径> [--name <名>]` | 在 ZCode 新建对话执行任务；stdout 一行 JSON（name/taskId） |
+| `zcode-sub send <name> "<消息>" [--steer\|--queue]` | 补充消息：默认 auto（运行中=GUI 排队/引导语义）；空闲=接续对话 |
+| `zcode-sub wait <name> [--timeout 秒]` | 阻塞等新事件/子代理主动消息（超时 TIMEOUT，退出码 2） |
+| `zcode-sub result <name>` | 最后回复全文 + 状态；还在跑会明确说 |
+| `zcode-sub resume <name> "<继续文本>"` | 空闲任务接续对话（运行中补充用 send） |
+| `zcode-sub stop <name>` | 停止生成 |
+| `zcode-sub list [--json]` | 本地任务表（name/taskId/状态） |
+| `zcode-sub mcp` | stdio MCP server（`reply_to_parent`），由 ZCode 拉起 |
 
-退出码：`2` 连不上 ZCode 入站端点；`3` 会话被运行中任务占用；`4` 消息被 ZCode 拒收（任务运行中）；`5` secret 不符；`6` 未绑定/绑定码问题；`7` 任务名非法（仅 `[A-Za-z0-9._-]+`）。
+退出码：`2` 连不上本机任务 API；`3` 工作区未在 ZCode 打开（409）；`4` 投递失败/任务已删除/运行中不能 resume；`5` token/Host 校验失败；`7` 任务名非法或重名。任务名仅 `[A-Za-z0-9._-]+`。
 
-## 重要边界与风险
+## 重要边界
 
-- **单 bot 单会话**：上游一个 webhook bot 同时只绑一个身份、只有一个会话（ZCode `botsService` 以 bot 为会话键）。同一时刻只能跑一个任务；`run` 派新任务后旧任务不能再 `resume`。需要并行任务时在 GUI 建多个 bot（当前版本未做多 bot 池，见 spec 决策 D-01）。
-- **运行中发消息会被拒收**：ZCode 私聊通道没有运行中补充输入（steer/queue 是群聊机制）。`send` 会原样转达拒收文案，不排队。
-- **终态判定**：ZCode 出站消息没有机器可读的任务结束信号；`result` 通过 `/status` 的「状态: 」行复核终态。上游文案变化会导致解析为 unknown（报原文，不猜）。「最终回复」按最近一次派发点之后的出站正文拼接——终态后上游补发的提醒类消息可能混入，最终结果以 ZCode GUI 为准。
-- **messageId 幂等**：入站每条消息用新的唯一 messageId；网络重试复用同一 id（上游 2 分钟幂等窗口内安全）。
-- 本工具不写 ZCode 的任何数据文件（配置只读；开关文件只在显式 `--write-switch` 且可写时创建）。
+- **多任务并行**：每次 `run` 在 ZCode 新建一个对话，name→taskId 映射存本地；互不干扰。
+- **运行中补充消息**：`send` 默认 `auto`（与 GUI 运行中发送的默认行为一致：排队或引导）；`--steer`/`--queue` 显式指定。返回的 `sent`/`queued`/`steered` 与 commandId 会打印。
+- **权限请求不经本工具**：wait 收到 `permission.requested` 会提示去 ZCode GUI 处理（契约 v2 本版不通过 API 批权限）。
+- **事件缓冲溢出**：上游每任务事件有界缓冲，溢出时 wait 会收到 `resync` 提示并改查任务状态；完整过程以 GUI 为准。
+- **终态口径**：`result` 以 `GET /api/tasks/:id` 的 status 为准（idle/error 即终态，lastAssistantText 为最后回复）。
+- 本工具不写 ZCode 的其他数据文件；开关文件仅 setup 显式写入。
 
 ## 开发
 
 ```bash
-npm test          # node:test，含假 ZCode 全链路
-scripts/smoke-real-zcode.sh   # 真机冒烟（需 ZCode 已装补丁并完成配置）
+npm test                        # node:test，假 ZCode（契约 v2）全链路
+scripts/smoke-real-zcode.sh    # 真机冒烟（需 ZCode 已装补丁并完成配置）
 ```
 
-文档：spec `docs/spec/2026-10-27-zcode-sub-bridge-eng-spec.md`、coding plan `docs/plan/2026-10-27-zcode-sub-bridge-coding-plan.md`。
+文档：spec `docs/spec/2026-10-27-zcode-sub-bridge-eng-spec.md`（含 v1→v2 方案变更决策记录）、coding plan `docs/plan/`、覆盖度 `docs/report/测试场景覆盖度.md`。

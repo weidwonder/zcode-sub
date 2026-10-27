@@ -14,8 +14,6 @@ export function pathsOf(home) {
     home,
     configFile: join(home, "config.json"),
     tasksFile: join(home, "tasks.json"),
-    daemonJson: join(home, "daemon.json"),
-    daemonLog: join(home, "daemon.log"),
     mailboxesDir: join(home, "mailboxes"),
   };
 }

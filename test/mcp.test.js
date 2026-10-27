@@ -1,34 +1,21 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
-import { createServer as createNetServer } from "node:net";
+import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, before, test } from "node:test";
-import { upsertTask } from "../src/tasks.js";
-import { readMailbox } from "../src/mailbox.js";
-import { startDaemon } from "../src/daemon.js";
+import { registerTask } from "../src/tasks.js";
+import { readMailboxLines } from "../src/mailbox.js";
+
+// MCP server 不再有 daemon：spawn 真实入口（bin/zcode-sub.js mcp），
+// 只用 ZCODE_SUB_HOME 指到临时 home，reply_to_parent 直接落信箱文件。
 
 const BIN = join(import.meta.dirname, "..", "bin", "zcode-sub.js");
-const SECRET = "s1";
 
 let home;
-let daemon;
-let daemonUrl;
 let child;
 let nextId = 1;
 const pending = new Map();
-
-function reservePort() {
-  return new Promise((resolve, reject) => {
-    const server = createNetServer();
-    server.listen(0, "127.0.0.1", () => {
-      const port = server.address().port;
-      server.close(() => resolve(port));
-    });
-    server.on("error", reject);
-  });
-}
 
 function send(method, params) {
   return new Promise((resolve, reject) => {
@@ -39,20 +26,11 @@ function send(method, params) {
   });
 }
 
-before(async () => {
+before(() => {
   home = mkdtempSync(join(tmpdir(), "zcode-sub-mcp-"));
-  upsertTask(home, "mcp-1", { cwd: "/tmp", isCurrent: true });
-  const daemonPort = await reservePort();
-  daemon = await startDaemon(home, {
-    botId: "bot-1",
-    secret: SECRET,
-    userId: "zcode-sub",
-    daemonPort,
-    ingressPort: 47821,
-  });
-  daemonUrl = `http://127.0.0.1:${daemonPort}`;
+  registerTask(home, "mcp-1", { taskId: "t-1", workspacePath: "/tmp/ws" });
   child = spawn(process.execPath, [BIN, "mcp"], {
-    env: { ...process.env, ZCODE_SUB_HOME: home, ZCODE_SUB_DAEMON_URL: daemonUrl, ZCODE_SUB_SECRET: SECRET },
+    env: { ...process.env, ZCODE_SUB_HOME: home },
     stdio: ["pipe", "pipe", "pipe"],
   });
   let buffer = "";
@@ -75,7 +53,6 @@ before(async () => {
 
 after(() => {
   child?.kill();
-  daemon?.server.close();
   if (home) rmSync(home, { recursive: true, force: true });
 });
 
@@ -90,31 +67,40 @@ test("initialize 与 tools/list", async () => {
   assert.deepEqual(tool.inputSchema.required, ["task", "message"]);
 });
 
-test("tools/call reply_to_parent 落信箱", async () => {
+test("tools/call reply_to_parent 直接落信箱文件", async () => {
   const call = await send("tools/call", {
     name: "reply_to_parent",
-    arguments: { task: "mcp-1", message: "MCP 主动汇报" },
+    arguments: { task: "mcp-1", message: "主动汇报" },
   });
   assert.equal(call.result.isError, undefined);
   assert.match(call.result.content[0].text, /已投递给 mcp-1/u);
-  const last = readMailbox(home, "mcp-1").at(-1);
+  const last = readMailboxLines(home, "mcp-1").at(-1);
   assert.equal(last.kind, "reply");
-  assert.equal(last.text, "MCP 主动汇报");
+  assert.equal(last.text, "主动汇报");
 });
 
-test("未知 task 报 isError 但 server 不退出", async () => {
+test("未知 task 报 isError（登记表口径）且 server 不退出", async () => {
   const call = await send("tools/call", {
     name: "reply_to_parent",
     arguments: { task: "no-such", message: "x" },
   });
   assert.equal(call.result.isError, true);
-  assert.match(call.result.content[0].text, /不存在/u);
+  assert.match(call.result.content[0].text, /不在 zcode-sub 登记表/u);
   // server 仍存活：再发一次 initialize 应有响应
   const again = await send("initialize", { protocolVersion: "2024-11-05" });
   assert.equal(again.result.serverInfo.name, "zcode-sub");
 });
 
-test("未知工具报 isError", async () => {
+test("缺 message 报 isError", async () => {
+  const call = await send("tools/call", {
+    name: "reply_to_parent",
+    arguments: { task: "mcp-1" },
+  });
+  assert.equal(call.result.isError, true);
+  assert.match(call.result.content[0].text, /task 与 message 都必填/u);
+});
+
+test("未知工具名报 isError", async () => {
   const call = await send("tools/call", { name: "nope", arguments: {} });
   assert.equal(call.result.isError, true);
 });

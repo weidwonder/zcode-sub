@@ -1,39 +1,38 @@
-import { existsSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
+import { randomBytes } from "node:crypto";
+import { chmodSync, existsSync, mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
 import { userInfo } from "node:os";
+import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { dirname, join } from "node:path";
 import { getHome, assertValidName } from "./home.js";
-import { loadConfig, createInitialConfig, saveConfig, updateConfig } from "./config.js";
-import { postIngress, queryStatus } from "./ingress.js";
-import { appendMailbox, readMailbox, readCursor, writeCursor } from "./mailbox.js";
-import { loadTasks, upsertTask, getTask } from "./tasks.js";
-import { ensureDaemon } from "./ensure.js";
+import { loadConfig, createInitialConfig, updateConfig } from "./config.js";
+import * as api from "./api.js";
+import * as tasks from "./tasks.js";
+import { readMailboxLines, readCursor, writeCursor } from "./mailbox.js";
 
-// CLI 分发。退出码表见 spec §3：2 unreachable / 3 busy / 4 send_rejected /
-// 5 secret / 6 not_bound / 7 name_invalid / 其余 1。
+// CLI 分发。退出码表：1 用法/未配置/本地无此任务 / 2 API 不可达、wait 超时 /
+// 3 工作区未打开 / 4 发送失败、任务已删（API 侧）、resume 时任务忙 / 5 鉴权失败 /
+// 7 任务名非法或重名。
 
 const USAGE = `zcode-sub 用法（把 ZCode 桌面版当子代理）：
 
-  zcode-sub setup [--bot-id <id>] [--bind-code <CODE>] [--ingress-port <端口>] [--daemon-port <端口>] [--write-switch]
-      检查 ZCode 入站端点、生成/读取桥接配置、打印 GUI 一次性配置步骤；
-      --bind-code 在 30 秒有效期内完成绑定（GUI 生成码后立刻执行）。
+  zcode-sub setup [--api-port <端口>]
+      检查 ZCode 本机任务 API、生成/读取开关文件与 token、打印 MCP 配置步骤。
   zcode-sub run "<任务>" --cwd <绝对路径> [--name <名>]
-      派发任务：状态查询 → /new → 投递正文；stdout 一行 JSON。
-  zcode-sub send <name> "<消息>"
-      任务运行中作为补充消息投递（被 ZCode 拒收会如实转达）；任务已结束则等价续聊。
+      在 ZCode 该工作区新建对话执行任务（多任务可并行）；stdout 一行 JSON。
+  zcode-sub send <name> "<消息>" [--steer|--queue]
+      补充消息：默认 auto（运行中=GUI 排队/引导语义）；--steer 强制引导、--queue 强制排队；
+      任务空闲时即接续对话（sent）。
   zcode-sub wait <name> [--timeout 秒]
-      阻塞等新消息并打印（适合后台运行，退出即唤醒）；超时输出 TIMEOUT（退出码 2）。
+      阻塞等新事件或子代理主动消息（适合后台运行，退出即唤醒）；超时输出 TIMEOUT（退出码 2）。
   zcode-sub result <name>
       最终回复全文 + 状态；还在跑会明确说。
   zcode-sub resume <name> "<继续文本>"
-      在原 ZCode 会话里续聊。
+      在原 ZCode 对话续聊（要求任务空闲；运行中补充用 send）。
   zcode-sub stop <name>
-      取消任务（ZCode /stop）。
+      停止任务生成。
   zcode-sub list [--json]
   zcode-sub mcp
-      stdio MCP server（reply_to_parent 工具，配进 ZCode 的 mcp.servers）。
-  zcode-sub daemon
-      常驻出站接收进程（其它命令需要时自动拉起，一般不用手动跑）。`;
+      stdio MCP server（reply_to_parent 工具，配进 ZCode 的 mcp.servers）。`;
 
 export async function runCli(argv) {
   const [command, ...rest] = argv;
@@ -43,8 +42,6 @@ export async function runCli(argv) {
       return cmdSetup(home, parseFlags(rest));
     case "run":
       return cmdRun(home, parseFlags(rest));
-    case "list":
-      return cmdList(home, parseFlags(rest));
     case "send":
       return cmdSend(home, parseFlags(rest));
     case "wait":
@@ -55,8 +52,8 @@ export async function runCli(argv) {
       return cmdResume(home, parseFlags(rest));
     case "stop":
       return cmdStop(home, parseFlags(rest));
-    case "daemon":
-      return cmdDaemon(home);
+    case "list":
+      return cmdList(home, parseFlags(rest));
     case "mcp":
       return cmdMcp();
     default:
@@ -86,12 +83,16 @@ function parseFlags(args) {
   return flags;
 }
 
+function usageError(text) {
+  const err = new Error(text);
+  err.exitCode = 1;
+  return err;
+}
+
 function requireConfig(home) {
   const config = loadConfig(home);
-  if (!config || !config.botId || !config.secret) {
-    const err = new Error(
-      "zcode_not_configured: 桥接配置不完整。先运行 zcode-sub setup（见其打印的一次性配置步骤）。",
-    );
+  if (!config || !config.token) {
+    const err = new Error("zcode_not_configured: 先运行 zcode-sub setup 完成配置。");
     err.code = "zcode_not_configured";
     err.exitCode = 1;
     throw err;
@@ -99,108 +100,113 @@ function requireConfig(home) {
   return config;
 }
 
+function requireTask(home, name) {
+  assertValidName(name);
+  const task = tasks.getTask(home, name);
+  if (!task) {
+    const err = new Error(`zcode_task_not_found: 没有任务 "${name}"。zcode-sub list 查看。`);
+    err.code = "zcode_task_not_found";
+    err.exitCode = 1;
+    throw err;
+  }
+  return task;
+}
+
 // ---------- setup ----------
 
 async function cmdSetup(home, flags) {
+  const dataBaseDir = process.env.ZCODE_DATA_BASE_DIR?.trim() || userInfo().homedir;
+  const switchFile = join(dataBaseDir, ".zcode", "v2", "local-task-api.json");
   let config = loadConfig(home) ?? createInitialConfig();
-  const changes = {};
-  if (typeof flags["bot-id"] === "string") changes.botId = flags["bot-id"].trim();
-  if (typeof flags["ingress-port"] === "string") {
-    const port = Number.parseInt(flags["ingress-port"], 10);
-    if (Number.isInteger(port) && port > 0) changes.ingressPort = port;
-  }
-  if (typeof flags["daemon-port"] === "string") {
-    const port = Number.parseInt(flags["daemon-port"], 10);
-    if (Number.isInteger(port) && port > 0) changes.daemonPort = port;
-  }
-  if (typeof flags.secret === "string" && flags.secret.trim()) {
-    changes.secret = flags.secret.trim();
-  }
-  config = Object.keys(changes).length ? updateConfig(home, changes) : config;
 
-  if (flags["bind-code"] !== undefined) {
-    const code = String(flags["bind-code"]).trim();
-    if (!code || code === "true") {
-      const err = new Error("用法：zcode-sub setup --bind-code <CODE>（GUI 生成的绑定码）");
-      err.exitCode = 1;
-      throw err;
+  if (typeof flags["api-port"] === "string") {
+    const port = Number.parseInt(flags["api-port"], 10);
+    if (Number.isInteger(port) && port > 0) {
+      config = updateConfig(home, { apiPort: port });
     }
-    return setupBindCode(home, config, code);
   }
 
-  // 开关文件：只读探测；不可写/不存在时打印用户命令（不绕过权限边界）。
-  const switchFile = readIngressSwitchFile();
-  if (switchFile?.port) {
-    config = updateConfig(home, { ingressPort: switchFile.port });
-  }
-  if (flags["write-switch"] && !switchFile) {
-    config = tryWriteSwitchFile(home, config);
+  const existing = readSwitchFile(switchFile);
+  if (existing) {
+    // 开关文件是 ZCode 侧的事实源：token/port 以它为准，不重写。
+    config = updateConfig(home, { apiPort: existing.port, token: existing.token });
+    process.stdout.write(`✓ 开关文件已存在并启用：${switchFile}（token 复用，port=${existing.port}）\n`);
+  } else {
+    const token = config.token || randomBytes(32).toString("hex");
+    try {
+      writeSwitchFile(switchFile, { enabled: true, port: config.apiPort, token });
+      config = updateConfig(home, { token });
+      process.stdout.write(`✓ 已写入开关文件 ${switchFile}（需重启 ZCode 生效）\n`);
+    } catch {
+      config = updateConfig(home, { token });
+      process.stdout.write(
+        `✗ 开关文件不可写（${switchFile}）。请手动创建，内容：{"enabled": true, "port": ${config.apiPort}, "token": "${token.slice(0, 4)}****"}，然后重启 ZCode。\n`,
+      );
+      process.stdout.write(`  完整 token 已存入 ${join(home, "config.json")}，可打开查看。\n`);
+    }
   }
 
-  const lines = [];
-  lines.push(`zcode-sub 配置目录：${home}`);
-  if (!isWritableHome(home)) {
-    lines.push(`⚠ 该目录当前不可写。请先在本机执行：dwc grant ${home}`);
-  }
-  lines.push("");
-  lines.push(`[1/4] ZCode 入站端点（127.0.0.1:${config.ingressPort}）`);
-  const health = await probeHealth(config.ingressPort);
-  lines.push(health.ok ? `  ✓ 正常，zcodeVersion=${health.zcodeVersion}` : `  ✗ 连不上：${health.message}`);
-  if (!health.ok) {
-    lines.push("    排查：ZCode 是否装了 webhook 入站补丁；开关文件是否 enabled；端口是否一致。");
-    lines.push(`    手动创建开关文件 ${switchFilePath()} 内容：{"enabled": true, "port": ${config.ingressPort}}（改后需重启 ZCode）`);
-  }
-  // daemon 起来后 GUI 里填的 webhookUrl 立即可测通
-  const daemon = await ensureDaemon(home).catch((error) => ({ error }));
-  const daemonPort = loadConfig(home)?.daemonPort ?? config.daemonPort;
-  lines.push(
-    daemon?.error
-      ? `  ✗ 桥接 daemon 未就绪：${daemon.error.message}`
-      : `  ✓ 桥接 daemon 已监听 127.0.0.1:${daemonPort}`,
-  );
-  lines.push("");
-  lines.push("[2/4] ZCode GUI 里新建 Webhook bot（设置 → Bots → 新建，选 Webhook）：");
-  lines.push(`  - webhookUrl: http://127.0.0.1:${daemonPort}/zcode/outbound`);
-  lines.push(`  - secret: ${config.secret.slice(0, 4)}****（完整值在 ${join(home, "config.json")}）`);
-  lines.push("  - 允许 workspace：留空 = 全部允许");
-  lines.push(`  建好后把 bot id 填回来：zcode-sub setup --bot-id <botId>`);
-  lines.push("");
-  lines.push("[3/4] 绑定（30 秒时效）：在 GUI 该 bot 页点「生成绑定码」，立刻执行：");
-  lines.push("  zcode-sub setup --bind-code <CODE>");
-  lines.push("");
-  lines.push("[4/4] 把 MCP 工具配进 ZCode（mcp.servers，需 features.mcp 开启）：");
-  lines.push("```json");
-  lines.push(JSON.stringify(mcpConfigSnippet(config), null, 2));
-  lines.push("```");
-  process.stdout.write(`${lines.join("\n")}\n`);
-}
-
-async function setupBindCode(home, config, code) {
-  const result = await postIngress(config, `/bind ${code}`);
-  const text = result.replies.join("\n");
-  if (text.includes("绑定成功") || text.includes("Bound successfully")) {
-    process.stdout.write(`✓ 绑定成功。userId=${config.userId}\n接下来可用：zcode-sub run "<任务>" --cwd <绝对路径>\n`);
-    return;
-  }
-  if (text.includes("未绑定") || text.includes("not bound")) {
-    const err = new Error(`zcode_not_bound: ${text}`);
-    err.code = "zcode_not_bound";
-    err.exitCode = 6;
-    throw err;
-  }
-  if (text.includes("绑定码无效") || text.includes("invalid or expired")) {
-    const err = new Error(
-      `zcode_bind_code_invalid: 绑定码无效或已过期（30 秒时效）。请在 GUI 重新生成后立刻重试。回执：${text}`,
+  const health = await api.probeHealth(config);
+  if (health.ok) {
+    process.stdout.write(`✓ 本机任务 API 正常 zcodeVersion=${health.zcodeVersion}\n`);
+  } else {
+    process.stdout.write(`✗ ${health.message}\n`);
+    process.stdout.write(
+      "  排查：ZCode 是否装了本机任务 API 补丁、写入开关文件后是否重启过 ZCode、开关文件是否 enabled、端口是否一致。\n",
     );
-    err.code = "zcode_bind_code_invalid";
-    err.exitCode = 6;
-    throw err;
   }
-  process.stdout.write(`${text || "（无回执）"}\n`);
+
+  if (isWritableHome(home)) {
+    process.stdout.write(`状态目录可写：${home}\n`);
+  } else {
+    process.stdout.write(`⚠ 请先执行 dwc grant ${home}\n`);
+  }
+
+  process.stdout.write(
+    "把下面片段合入 ZCode 的 MCP 配置（settings 里的 mcp.servers），ZCode 里即可用 reply_to_parent 工具：\n",
+  );
+  process.stdout.write("```json\n");
+  process.stdout.write(`${JSON.stringify(mcpConfigSnippet(home), null, 2)}\n`);
+  process.stdout.write("```\n");
 }
 
-function mcpConfigSnippet(config) {
-  const port = config.daemonPort;
+function readSwitchFile(file) {
+  try {
+    const parsed = JSON.parse(readFileSync(file, "utf8"));
+    if (
+      parsed &&
+      parsed.enabled === true &&
+      typeof parsed.token === "string" &&
+      parsed.token &&
+      Number.isInteger(parsed.port) &&
+      parsed.port > 0
+    ) {
+      return { port: parsed.port, token: parsed.token };
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+// 0600 原子写：token 不扩大可读面。
+function writeSwitchFile(file, value) {
+  mkdirSync(dirname(file), { recursive: true });
+  const tmp = join(dirname(file), `.${basenameOf(file)}.${process.pid}.tmp`);
+  writeFileSync(tmp, `${JSON.stringify(value, null, 2)}\n`, { mode: 0o600 });
+  try {
+    chmodSync(tmp, 0o600);
+  } catch {
+    // 平台不支持时保留 writeFileSync 的 mode
+  }
+  renameSync(tmp, file);
+}
+
+function basenameOf(file) {
+  return file.split(/[\\/]/u).at(-1) ?? file;
+}
+
+function mcpConfigSnippet(home) {
   return {
     features: { mcp: true },
     mcp: {
@@ -209,10 +215,7 @@ function mcpConfigSnippet(config) {
           type: "stdio",
           command: process.execPath,
           args: [join(packageBinDir(), "zcode-sub.js"), "mcp"],
-          env: {
-            ZCODE_SUB_DAEMON_URL: `http://127.0.0.1:${port}`,
-            ZCODE_SUB_SECRET: config.secret,
-          },
+          env: { ZCODE_SUB_HOME: resolve(home) },
           enabled: true,
         },
       },
@@ -229,7 +232,6 @@ function isWritableHome(home) {
   const probe = join(home, ".write-probe");
   try {
     writeFileSync(probe, "1");
-    existsSync(probe);
     return true;
   } catch {
     return false;
@@ -242,103 +244,45 @@ function isWritableHome(home) {
   }
 }
 
-function switchFilePath() {
-  const base = process.env.ZCODE_DATA_BASE_DIR?.trim() || userInfo().homedir;
-  return join(base, ".zcode", "v2", "bot-webhook-ingress.json");
-}
-
-function readIngressSwitchFile() {
-  try {
-    const parsed = JSON.parse(readFileSync(switchFilePath(), "utf8"));
-    if (parsed && parsed.enabled === true && Number.isInteger(parsed.port)) {
-      return { port: parsed.port };
-    }
-    return null;
-  } catch {
-    return null;
-  }
-}
-
-function tryWriteSwitchFile(home, config) {
-  const file = switchFilePath();
-  try {
-    writeFileSync(file, `${JSON.stringify({ enabled: true, port: config.ingressPort }, null, 2)}\n`);
-    process.stdout.write(`✓ 已写入开关文件 ${file}（需重启 ZCode 生效）\n`);
-    return config;
-  } catch {
-    process.stdout.write(
-      `✗ 开关文件不可写（${file}）。请手动创建，内容：{"enabled": true, "port": ${config.ingressPort}}，然后重启 ZCode。\n`,
-    );
-    return config;
-  }
-}
-
-async function probeHealth(port) {
-  try {
-    const response = await fetch(`http://127.0.0.1:${port}/health`, {
-      signal: AbortSignal.timeout(2_000),
-    });
-    const payload = await response.json();
-    if (payload?.ok === true && payload?.ingress === "zcode-bot-webhook") {
-      return { ok: true, zcodeVersion: payload.zcodeVersion ?? "?" };
-    }
-    return { ok: false, message: `端点响应异常（${response.status}）` };
-  } catch (error) {
-    return { ok: false, message: error?.message ?? String(error) };
-  }
-}
-
 // ---------- run ----------
 
 async function cmdRun(home, flags) {
-  const config = requireConfig(home);
   const taskText = flags._[0];
-  const cwd = typeof flags.cwd === "string" ? flags.cwd : undefined;
-  if (!taskText || !cwd || !cwd.startsWith("/")) {
-    const err = new Error('用法：zcode-sub run "<任务>" --cwd <工作区绝对路径> [--name <名>]');
-    err.exitCode = 1;
-    throw err;
+  const cwd = flags.cwd;
+  if (!taskText || typeof cwd !== "string" || !cwd.startsWith("/")) {
+    throw usageError('用法：zcode-sub run "<任务>" --cwd <工作区绝对路径> [--name <名>]');
   }
-  const name = typeof flags.name === "string" ? flags.name : autoName();
+  const name = typeof flags.name === "string" && flags.name ? flags.name : autoName();
   assertValidName(name);
+  const config = requireConfig(home);
 
-  await ensureDaemon(home);
-
-  const status = await queryStatus(config);
-  if (status.state === "running") {
-    const err = new Error(
-      `zcode_task_busy: bot 会话当前任务正在运行（${describeStatus(status)}）。可 zcode-sub wait 等结果或 zcode-sub stop 停止后再派发。`,
-    );
-    err.code = "zcode_task_busy";
-    err.exitCode = 3;
-    throw err;
-  }
-  if (status.state === "unknown") {
-    const err = new Error(
-      `zcode_status_unknown: /status 无法解析状态，原文：\n${status.raw}`,
-    );
-    err.code = "zcode_status_unknown";
-    err.exitCode = 1;
-    throw err;
+  // 先建 ZCode 对话，再登记本地；名字冲突时 ZCode 侧已存在，要如实告知。
+  const { taskId } = await api.createTask(config, {
+    workspacePath: cwd,
+    prompt: wrappedPrompt(name, cwd, taskText),
+    title: name,
+  });
+  try {
+    tasks.registerTask(home, name, { taskId, workspacePath: cwd });
+  } catch (error) {
+    if (error?.code === "zcode_name_taken") {
+      process.stderr.write(
+        `⚠ 任务已在 ZCode 创建（taskId=${taskId}）但本地名字冲突，换名重跑；或手动记下 taskId。\n`,
+      );
+    }
+    throw error;
   }
 
-  await postIngress(config, "/new");
-  const wrapped = [
+  process.stdout.write(`${JSON.stringify({ name, taskId, status: "dispatched", workspacePath: cwd })}\n`);
+}
+
+function wrappedPrompt(name, cwd, taskText) {
+  return [
     `【zcode-sub 委托】你的任务名：${name}。工作目录：${cwd}。`,
-    "完成后请输出最终总结。若要主动向派发你的父代理发消息，用 MCP 工具 reply_to_parent(task=\"" + name + "\", message=\"<内容>\")。",
+    '完成后请输出最终总结。若要主动向派发你的父代理发消息，用 MCP 工具 reply_to_parent(task="' + name + '", message="<内容>")。',
     "----- 任务 -----",
     taskText,
   ].join("\n");
-  await postIngress(config, wrapped);
-
-  upsertTask(home, name, { cwd, isCurrent: true, lastStatus: "dispatched" });
-  appendMailbox(home, name, {
-    kind: "dispatch",
-    text: `任务已派发（${new Date().toISOString()}）`,
-  });
-
-  const paths = { mailbox: join(home, "mailboxes", `${name}.jsonl`) };
-  process.stdout.write(`${JSON.stringify({ name, status: "dispatched", cwd, mailbox: paths.mailbox })}\n`);
 }
 
 function autoName() {
@@ -347,227 +291,174 @@ function autoName() {
   return `zsub-${now.getFullYear()}${pad(now.getMonth() + 1)}${pad(now.getDate())}-${pad(now.getHours())}${pad(now.getMinutes())}${pad(now.getSeconds())}`;
 }
 
-function describeStatus(status) {
-  const line = status.raw
-    .split("\n")
-    .find((lineText) => lineText.includes("状态:") || lineText.includes("State:"));
-  return line?.trim() ?? status.state;
-}
-
-// ---------- list ----------
-
-function cmdList(home, flags) {
-  const store = loadTasks(home);
-  const entries = Object.entries(store.tasks);
-  if (flags.json) {
-    process.stdout.write(`${JSON.stringify({ tasks: entries.map(([name, task]) => ({ name, ...task })) }, null, 2)}\n`);
-    return;
-  }
-  if (entries.length === 0) {
-    process.stdout.write("（还没有任务；用 zcode-sub run 派发）\n");
-    return;
-  }
-  const rows = [["name", "status", "current", "cwd", "lastActivity"].join("\t")];
-  for (const [name, task] of entries) {
-    rows.push(
-      [name, task.lastStatus ?? "?", task.isCurrent ? "*" : "", task.cwd ?? "", new Date(task.lastActivityAt ?? 0).toISOString()].join("\t"),
-    );
-  }
-  process.stdout.write(`${rows.join("\n")}\n`);
-}
-
-// ---------- send / wait / result / resume / stop ----------
-
-// 任务运行中上游会拒绝普通正文（私聊无 steer/queue），拒收文案如实转达。
-const TASK_RUNNING_PATTERN = /当前任务正在运行|still running/iu;
-
-function requireTask(home, name) {
-  assertValidName(name);
-  const task = getTask(home, name);
-  if (!task) {
-    const err = new Error(`zcode_task_not_found: 没有任务 "${name}"。zcode-sub list 查看。`);
-    err.code = "zcode_task_not_found";
-    err.exitCode = 1;
-    throw err;
-  }
-  return task;
-}
-
-async function deliverText(home, config, name, text) {
-  const result = await postIngress(config, text);
-  const joined = result.replies.join("\n");
-  if (TASK_RUNNING_PATTERN.test(joined)) {
-    const err = new Error(
-      `zcode_send_rejected: ZCode 拒收了这条消息（任务运行中，私聊无补充输入通道）。ZCode 原话：\n${joined}`,
-    );
-    err.code = "zcode_send_rejected";
-    err.exitCode = 4;
-    throw err;
-  }
-  appendMailbox(home, name, {
-    kind: "dispatch",
-    text: `已投递补充输入：${text.slice(0, 80)}${text.length > 80 ? "…" : ""}`,
-  });
-  upsertTask(home, name, { lastActivityAt: Date.now() });
-  return result;
-}
+// ---------- send / resume / stop ----------
 
 async function cmdSend(home, flags) {
-  const config = requireConfig(home);
   const name = flags._[0];
   const message = flags._[1];
   if (!name || message === undefined) {
-    const err = new Error('用法：zcode-sub send <name> "<消息>"');
-    err.exitCode = 1;
-    throw err;
+    throw usageError('用法：zcode-sub send <name> "<消息>" [--steer|--queue]');
   }
-  requireTask(home, name);
-  await ensureDaemon(home);
-  await deliverText(home, config, name, message);
-  process.stdout.write("✓ 已投递（任务已结束则在原会话续聊）\n");
+  const task = requireTask(home, name);
+  const config = requireConfig(home);
+  const delivery = flags.steer ? "steer" : flags.queue ? "queue" : "auto";
+  const result = await api.sendMessage(config, task.taskId, message, delivery);
+  const commandId = result?.commandId ? `（commandId=${result.commandId}）` : "";
+  process.stdout.write(`✓ 投递结果：${result?.delivery ?? "?"}${commandId}\n`);
 }
 
 async function cmdResume(home, flags) {
-  const config = requireConfig(home);
   const name = flags._[0];
   const message = flags._[1];
   if (!name || message === undefined) {
-    const err = new Error('用法：zcode-sub resume <name> "<继续文本>"');
-    err.exitCode = 1;
-    throw err;
+    throw usageError('用法：zcode-sub resume <name> "<继续文本>"');
   }
   const task = requireTask(home, name);
-  if (!task.isCurrent) {
+  const config = requireConfig(home);
+  const payload = await api.getTask(config, task.taskId);
+  const status = payload.status;
+  if (status === "running" || status === "waiting_permission" || status === "waiting_input") {
     const err = new Error(
-      `zcode_not_current: "${name}" 不再是 bot 会话当前任务（后续 run 已重置会话），无法在原会话续聊。`,
+      `zcode_task_busy_for_resume: 任务正在运行/等待（status=${status}）。运行中补充消息用 zcode-sub send。`,
     );
-    err.code = "zcode_not_current";
-    err.exitCode = 1;
+    err.code = "zcode_task_busy_for_resume";
+    err.exitCode = 4;
     throw err;
   }
-  await ensureDaemon(home);
-  await deliverText(home, config, name, message);
-  process.stdout.write("✓ 已在原会话续聊\n");
+  if (status !== "idle") {
+    // error 等其他状态：原样接续，让用户在对话里处理
+    process.stdout.write(`任务 status=${status}，按接续处理\n`);
+  }
+  await api.sendMessage(config, task.taskId, message, "auto");
+  process.stdout.write("✓ 已接续对话（sent）\n");
 }
 
 async function cmdStop(home, flags) {
-  const config = requireConfig(home);
   const name = flags._[0];
   if (!name) {
-    const err = new Error("用法：zcode-sub stop <name>");
-    err.exitCode = 1;
-    throw err;
+    throw usageError("用法：zcode-sub stop <name>");
   }
-  requireTask(home, name);
-  await ensureDaemon(home);
-  const result = await postIngress(config, "/stop");
-  const text = result.replies.join("\n");
-  appendMailbox(home, name, { kind: "status", text });
-  upsertTask(home, name, { lastStatus: "stopped", lastActivityAt: Date.now() });
-  process.stdout.write(`${text || "（无回执）"}\n`);
+  const task = requireTask(home, name);
+  const config = requireConfig(home);
+  await api.stopTask(config, task.taskId);
+  process.stdout.write("✓ 已请求停止\n");
 }
+
+// ---------- result ----------
+
+async function cmdResult(home, flags) {
+  const name = flags._[0];
+  if (!name) {
+    throw usageError("用法：zcode-sub result <name>");
+  }
+  const task = requireTask(home, name);
+  const config = requireConfig(home);
+  const payload = await api.getTask(config, task.taskId);
+  const status = payload.status;
+  tasks.updateTask(home, name, { lastStatus: status });
+
+  if (status === "running" || status === "waiting_permission" || status === "waiting_input") {
+    process.stdout.write(`还在跑（status=${status}）\n`);
+    if (status !== "running") {
+      process.stdout.write("⏳ 请在 ZCode GUI 处理（权限/输入请求不经本工具）\n");
+    }
+    process.stdout.write(`可用 zcode-sub wait ${name} 收实时事件\n`);
+    return;
+  }
+  if (status === "idle" || status === "error") {
+    process.stdout.write(`状态：${status}\n`);
+    process.stdout.write("----- 最后回复 -----\n");
+    const text = typeof payload.lastAssistantText === "string" ? payload.lastAssistantText : "";
+    process.stdout.write(`${text || "（无助手回复文本——用 wait 看事件或在 GUI 查看）"}\n`);
+    return;
+  }
+  process.stdout.write(`状态未知（原文 ${status}），按非终态处理\n`);
+}
+
+// ---------- wait ----------
 
 async function cmdWait(home, flags) {
   const name = flags._[0];
   if (!name) {
-    const err = new Error("用法：zcode-sub wait <name> [--timeout 秒]");
-    err.exitCode = 1;
-    throw err;
+    throw usageError("用法：zcode-sub wait <name> [--timeout 秒]");
   }
-  requireTask(home, name);
-  const timeoutMs = (Number.parseInt(String(flags.timeout ?? "600"), 10) || 600) * 1000;
-  const cursor = readCursor(home, name);
-  const deadline = Date.now() + timeoutMs;
+  const task = requireTask(home, name);
+  const config = requireConfig(home);
+  const timeoutSec = Number.parseInt(String(flags.timeout ?? "600"), 10) || 600;
+  const deadline = Date.now() + timeoutSec * 1000;
 
-  while (Date.now() < deadline) {
-    const fresh = readMailbox(home, name).filter((entry) => entry.seq > cursor);
-    if (fresh.length > 0) {
-      writeCursor(home, name, Math.max(...fresh.map((entry) => entry.seq)));
-      for (const entry of fresh) {
-        process.stdout.write(`[${entry.kind}] ${entry.text}\n`);
+  for (;;) {
+    // 信箱优先：子代理主动消息不进事件流，也不必等长轮询
+    const lines = readMailboxLines(home, name);
+    const cursor = readCursor(home, name);
+    if (lines.length > cursor) {
+      for (const line of lines.slice(cursor)) {
+        process.stdout.write(`[reply] ${line.text}\n`);
       }
+      writeCursor(home, name, lines.length);
       return;
     }
-    await new Promise((resolve) => setTimeout(resolve, 200));
-  }
-  process.stdout.write("TIMEOUT\n");
-  process.exitCode = 2;
-}
 
-async function cmdResult(home, flags) {
-  const config = requireConfig(home);
-  const name = flags._[0];
-  if (!name) {
-    const err = new Error("用法：zcode-sub result <name>");
-    err.exitCode = 1;
-    throw err;
-  }
-  requireTask(home, name);
-  await ensureDaemon(home);
-
-  const status = await queryStatus(config);
-  appendMailbox(home, name, { kind: "status", text: status.raw });
-  upsertTask(home, name, { lastStatus: status.state, lastActivityAt: Date.now() });
-
-  if (status.state === "running" || status.state === "unknown") {
-    const recent = readMailbox(home, name).slice(-3);
-    process.stdout.write(
-      status.state === "running"
-        ? `还在跑（最近活动：\n${recent.map((entry) => `[${entry.kind}] ${entry.text.slice(0, 120)}`).join("\n")}\n）\n`
-        : `无法判定状态。/status 原文：\n${status.raw}\n`,
-    );
-    return;
-  }
-
-  // 最终回复 = 最近一次 dispatch 之后的 outbound/reply 正文
-  const entries = readMailbox(home, name);
-  let lastDispatchIndex = -1;
-  for (let index = entries.length - 1; index >= 0; index -= 1) {
-    if (entries[index].kind === "dispatch") {
-      lastDispatchIndex = index;
-      break;
+    const remainingMs = deadline - Date.now();
+    if (remainingMs <= 0) {
+      process.stdout.write("TIMEOUT\n");
+      process.exitCode = 2;
+      return;
     }
-  }
-  const finalEntries = entries
-    .slice(lastDispatchIndex + 1)
-    .filter((entry) => entry.kind === "outbound" || entry.kind === "reply");
-  const stateLine = status.raw.split("\n").find((line) => line.includes("状态:") || line.includes("State:"));
 
-  process.stdout.write(`状态：${stateLine?.trim() ?? status.state}\n`);
-  if (finalEntries.length === 0) {
-    process.stdout.write("（终态但没有捕获到回复正文——用 zcode-sub wait <name> 看历史消息，或直接在 ZCode GUI 查看）\n");
-    return;
-  }
-  process.stdout.write("----- 最终回复 -----\n");
-  for (const entry of finalEntries) {
-    process.stdout.write(`${entry.text}\n`);
-    if (entry.kind === "reply") process.stdout.write("\n");
+    const payload = await api.getEvents(config, task.taskId, task.eventsSeq, Math.min(30_000, remainingMs));
+    if (payload?.error === "task_not_found") {
+      const err = new Error(`zcode_task_not_found: 任务 ${task.taskId} 不存在（可能已在 GUI 删除）。`);
+      err.code = "zcode_task_not_found";
+      err.exitCode = 4;
+      throw err;
+    }
+    if (payload?.resync) {
+      const fresh = await api.getTask(config, task.taskId);
+      process.stdout.write(`⚠ 事件缓冲溢出，改查任务状态：${fresh.status}；完整过程见 ZCode GUI\n`);
+      tasks.updateTask(home, name, { lastStatus: fresh.status });
+      return;
+    }
+    const events = Array.isArray(payload?.events) ? payload.events : [];
+    if (events.length > 0) {
+      const patch = { eventsSeq: payload.nextSeq };
+      for (const event of events) {
+        process.stdout.write(`[${event.type}] ${event.text ?? event.error ?? event.summary ?? ""}\n`);
+        if (event.type === "permission.requested") {
+          process.stdout.write("⏳ 请在 ZCode GUI 处理该权限请求\n");
+        }
+        if (event.type === "turn.completed") patch.lastStatus = "idle";
+        if (event.type === "turn.failed") patch.lastStatus = "error";
+      }
+      tasks.updateTask(home, name, patch);
+      return;
+    }
+    // 空页 → 回到信箱检查继续等
   }
 }
 
-// ---------- mcp ----------
+// ---------- list / mcp ----------
+
+function cmdList(home, flags) {
+  const names = tasks.listTaskNames(home);
+  if (flags.json) {
+    const list = names.map((name) => ({ name, ...tasks.getTask(home, name) }));
+    process.stdout.write(`${JSON.stringify({ tasks: list }, null, 2)}\n`);
+    return;
+  }
+  if (names.length === 0) {
+    process.stdout.write("（还没有任务；用 zcode-sub run 派发）\n");
+    return;
+  }
+  const rows = [];
+  for (const name of names) {
+    const task = tasks.getTask(home, name);
+    rows.push([name, String(task.taskId ?? "").slice(0, 8), task.lastStatus ?? "?", task.workspacePath ?? ""].join("\t"));
+  }
+  process.stdout.write(`${rows.join("\n")}\n`);
+}
 
 async function cmdMcp() {
   const { runMcpServer } = await import("./mcp.js");
   await runMcpServer({});
-}
-
-// ---------- daemon ----------
-
-async function cmdDaemon(home) {
-  const { startDaemon } = await import("./daemon.js");
-  const config = loadConfig(home) ?? createInitialConfig();
-  const { server, port } = await startDaemon(home, config);
-  writeFileSync(
-    join(home, "daemon.json"),
-    `${JSON.stringify({ pid: process.pid, port, startedAt: Date.now() }, null, 2)}\n`,
-  );
-  const shutdown = () => {
-    server.close(() => process.exit(0));
-    setTimeout(() => process.exit(0), 1_000).unref();
-  };
-  process.on("SIGTERM", shutdown);
-  process.on("SIGINT", shutdown);
-  // 常驻：不 resolve
-  await new Promise(() => {});
 }

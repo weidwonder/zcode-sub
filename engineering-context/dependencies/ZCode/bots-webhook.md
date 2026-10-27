@@ -1,6 +1,7 @@
 # 业务域卡 — ZCode › bots-webhook
 
 > 落在 `dependencies/ZCode/bots-webhook.md`：ZCode 桌面版 Bots 子系统的 webhook 通道（本机入站端点 + 出站回调 + 会话语义）。
+> **2026-10-27 起 zcode-sub 传输层已切「本机任务 API（契约 v2）」，本卡 webhook 部分不再被调用方使用**——保留为 v1 调查结论（zcode-sub spec §14 决策记录的依据）；GUI busy 输入 delivery 语义一条仍被 v2 引用（send auto 的上游行为）。
 > 源码不在本项目里，`ctx lint-cards` 整卡跳过 cite 校验——每条 cite 已对照 ZCode 主工作树（main）逐条核过；路径相对 ZCode 仓库根。
 
 ## 职责
@@ -24,6 +25,8 @@ ZCode 桌面版的第三方 Bot 通道之一：外部程序按 webhook 契约把
 | 任务终态出站文本 | `botsService.ts` task_complete/task_error 分支（5738-5905）+ `replyFormatter.ts#formatBotAssistantReplyBlocks` | 内部 | 现行 | 任务结束 | webhook 不支持流式卡（`supportsStreamingCardReply` 5141-5149 要求 feishu/lark）；默认 replyMode=`assistant_changes`（`packages/shared/src/bots.ts#DEFAULT_BOT_REPLY_GRANULARITY`）→ 正文按 ≤3500 字拆多条 + 可能跟「变更摘要：…」；空输出兜底「任务已完成。」；错误发「任务失败：{message}」 |
 | 应用配置目录 | `packages/services/src/paths.ts#getAppConfigDir`（56-58） | 内部 | 现行 | 桥接读开关文件 | `{getDataBaseDir()}/.zcode/v2`；getDataBaseDir 优先级 setDataBaseDir > env ZCODE_DATA_BASE_DIR > HOME（模块加载时取值） |
 | MCP stdio 配置 | `apps/zcode-cli/docs/usage/07-mcp.md`；schema `packages/shared/src/mcp.ts`（31-35） | 配置 | 现行 | `mcp.servers` | stdio 支持 command/args/**env**；需 `features.mcp` 开启 |
+| GUI busy 输入 delivery 语义（v2 send auto 的上游行为） | `packages/ui/src/v4/ConversationComposer.tsx#requestedDelivery`（224-225 行注释、1320-1325 guide 裁决注释） | 内部 | 现行 | GUI 发送框 | busy 输入三档 `startNow`/`queue`/`guide`；guide（引导/steer）最终 steer 或回退 queue 由命令层裁决——`auto` 即走此主链 |
+| 任务服务接口（v2 补丁桥接目标，B 不直接调用） | `packages/services/src/session/zcodeTaskService.ts#enqueueTaskCommand`（322-337）、`#promoteTaskCommand`（339-346）、`#cancelTaskCommand`（348-355）、`#stopGeneration`（358-365）、`#resumeTask`（412-425） | RPC/内部 | 现行 | 桌面 GUI / 本机任务 API 补丁 | 排队（enqueue）/引导提升（promote）/撤销（cancel）以 commandId 为键；stopGeneration 防迟到误杀 |
 
 ## 陷阱项
 - 任务运行中发普通正文 — 私聊 webhook **无 steer/queue 语义**（那是群聊话题机制）：`handleMessage` 7668-7675 检测到 activeTask 运行即回「当前任务正在运行」并丢弃该消息，改用 /stop 停止或等终态后重发
