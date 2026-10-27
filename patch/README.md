@@ -48,7 +48,9 @@ patch/sync-upstream.sh /Users/weidwonder/projects/ZCode
 #    冲突时脚本停下并打印冲突文件清单；解决后在该仓库里 git cherry-pick --continue
 #    （补丁提交清单固定在 patch/series；不填则自动取 feat/local-bot-webhook 的非 chore(local-dw): 提交）
 # 2. 在 local/patched-* 分支上重新构建安装（同流程一；build 脚本对任意 checkout 的目录都可用）
-# 3. 先备份数据再替换：patch/backup-zcode-data.sh
+# 3. 门检+备份再替换：
+   node patch/verify-migration-checksums.mjs /Users/weidwonder/projects/ZCode   # checksum 门检，exit 0 才继续
+   patch/backup-zcode-data.sh
 ```
 
 若上游新版本引入了新迁移（升级后账本出现本分支清单外的条目），替换前把报告 §1.3 的 checksum 比对重跑一遍（报告附录有方法）。

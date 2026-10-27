@@ -192,6 +192,6 @@ authority_refs:
 ## 附：调查方法与可复现命令
 
 - 迁移账本读取：`sqlite3 -readonly ~/.zcode/cli/db/db.sqlite "SELECT id,checksum,app_version FROM schema_migration ORDER BY id;"`（tasks-index 同法，两个账本表）。
-- checksum 复算：见 worktree 提交的 `/tmp` 一次性脚本思路（提取迁移 SQL 模板字符串 → sha256 → 与账本比对）；本报告表格即其输出。
+- checksum 复算：`node patch/verify-migration-checksums.mjs /Users/weidwonder/projects/ZCode`（本仓工具；上游更新后替换安装前 MUST 重跑，exit 0 才继续）。
 - 服务端配置：`curl -sS "https://zcode.z.ai/api/v1/client/configs?app_version=3.16.2&platform=darwin-arm64"`。
 - 已装版本元数据：`plutil -extract CFBundleShortVersionString raw /Applications/ZCode.app/Contents/Info.plist` → 3.16.3（CFBundleVersion 3.16.3.8992，dev.zcode.app）。

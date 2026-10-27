@@ -82,6 +82,7 @@ authority_refs:
 | FR-004 | `patch/rollback-desktop.sh`：列出 `/Users/weidwonder/projects/zcode-backups/apps/` 的可回滚快照；无参数恢复最近一份（或 `--from <快照路径>` 指定）；同样检测运行、mv 当前包到备份区（带 `rolledback-from-` 前缀）、mv 快照回 `/Applications`。支持 `--dry-run`。 |
 | FR-005 | `patch/sync-upstream.sh <ZCode源码目录>`：`git fetch origin`；从 `origin/main` 创建 `local/patched-<短SHA>` 分支（已存在则中止）；补丁来源：`patch/series`（一行一个提交 SHA，`#` 注释行忽略）非空用之，为空则取 `origin/main..feat/local-bot-webhook` 中非 `chore(local-dw):` 前缀的提交按序 cherry-pick；冲突即停（打印冲突文件清单，保留现场，退出码 4）；全部通过后跑 `pnpm typecheck` 与 `pnpm lint`（Node 24.14.0 PATH 前置）；结尾打印下一步（build-desktop.sh）。git 命令一律带 `-c safe.directory='*'`。支持 `--dry-run`（打印计划：新分支名、将 pick 的提交清单、将跑的校验命令，不执行写操作）。 |
 | FR-006 | `patch/README.md`：首次替换、上游更新、回滚三条流程的完整命令序列；两份身份方案的取舍依据（指向调查报告）；已知风险（强更门、TCC 重授权、降级数据损耗、备份位置）。 |
+| FR-008 | `patch/verify-migration-checksums.mjs <ZCode源码目录> [--zcode-root=...]`：复算三组迁移账本 checksum 并与用户库比对（会话库 24 条、任务索引 4 条、项目存储 2 条精确复算；动态构造条目显式 SKIP-DYN），账本含清单外条目即非零退出——上游更新后替换安装前的降级门检。 |
 | FR-007 | 调查报告 `docs/report/zcode-patched-build-compat.md`：覆盖任务书四大问（降级风险/登录凭据/强制升级门/推荐方案与回滚），结论全部附 `文件:行` 或实测输出作为证据；含「以 2026-10-27 库状态为准」的时效声明。 |
 
 ## 2. 数据模型 / 数据结构
@@ -251,9 +252,10 @@ authority_refs:
 | AC-006 | install/rollback 的 dry-run 对模拟 .app（含 Info.plist）打印正确的目标路径与 mv/ditto/codesign 计划 | FR-003, FR-004 |
 | AC-007 | 调查报告覆盖任务书四大问且结论有出处；推荐方案与脚本默认值一致 | FR-007 |
 | AC-008 | `patch/README.md` 三条流程可直接照抄执行 | FR-006 |
-| AC-009 | 权限受限环境（本座位）实测：EACCES 路径的报错包含 `dwc grant` 提示 | FR-001~005 |
+| AC-009 | 权限受限环境实测：EACCES 路径的报错包含 `dwc grant` 提示 | FR-001~005 |
+| AC-010 | verify-migration-checksums.mjs 对当前用户库实跑：exit 0，21 条 OK、5 条 SKIP-DYN，与报告 §1.3 一致 | FR-008 |
 
-**覆盖自查**：FR-001→AC-002/003/004；FR-002→AC-002/003/005；FR-003→AC-002/003/006；FR-004→AC-002/003/006；FR-005→AC-002/003/005；FR-006→AC-008；FR-007→AC-007；（流程性）AC-001/009→—。
+**覆盖自查**：FR-001→AC-002/003/004；FR-002→AC-002/003/005；FR-003→AC-002/003/006；FR-004→AC-002/003/006；FR-005→AC-002/003/005；FR-006→AC-008；FR-007→AC-007；FR-008→AC-010；（流程性）AC-001/009→—。
 
 ## 12. 待澄清点
 
