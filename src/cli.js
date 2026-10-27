@@ -1,4 +1,4 @@
-import { randomBytes } from "node:crypto";
+import { randomBytes, randomUUID } from "node:crypto";
 import { mkdirSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
 import { userInfo } from "node:os";
 import { dirname, join, resolve } from "node:path";
@@ -7,11 +7,16 @@ import { getHome, assertValidName } from "./home.js";
 import { atomicWriteJson, loadConfig, createInitialConfig, updateConfig } from "./config.js";
 import * as api from "./api.js";
 import * as tasks from "./tasks.js";
-import { readMailboxLines, readCursor, writeCursor } from "./mailbox.js";
+import { mailboxPath, readMailboxLines, readCursor, writeCursor } from "./mailbox.js";
 
 // CLI 分发。退出码表：1 用法/未配置/本地无此任务 / 2 API 不可达、wait 超时 /
 // 3 工作区未打开 / 4 发送失败、任务已删（API 侧）、resume 时任务忙 / 5 鉴权失败 /
 // 7 任务名非法或重名 / 8 并发派发超上限。
+
+// wait 单次调用的批级输出总量上限（按已写字符估算）：事件批/reply 批各自累计，
+// 超过上限且还有剩余条目时停止逐条打印、改打一行略过提示；游标照常推进不丢数据
+// （全文用 result / ZCode GUI / 信箱文件查看）。防一大批事件/主动消息冲爆派发方的输出预算。
+const WAIT_OUTPUT_LIMIT = 20_000;
 
 const USAGE = `zcode-sub 用法（把 ZCode 桌面版当子代理）：
 
@@ -115,6 +120,14 @@ function requireTask(home, name) {
 // ---------- setup ----------
 
 async function cmdSetup(home, flags) {
+  // 任何 loadConfig/updateConfig 之前先探状态目录可写：不可写时后续 ensureHome 的
+  // mkdirSync 会裸崩，这里直接给 dwc grant 指引退出。
+  if (!ensureWritableHome(home)) {
+    process.stdout.write(`✗ 状态目录不可写：${home}\n`);
+    process.stdout.write(`请执行：dwc grant ${home}\n`);
+    process.exitCode = 1;
+    return;
+  }
   const dataBaseDir = process.env.ZCODE_DATA_BASE_DIR?.trim() || userInfo().homedir;
   const switchFile = join(dataBaseDir, ".zcode", "v2", "local-task-api.json");
   let config = loadConfig(home) ?? createInitialConfig();
@@ -226,6 +239,16 @@ function packageBinDir() {
   return join(dirname(fileURLToPath(import.meta.url)), "..", "bin");
 }
 
+// setup 前置探测：目录不存在先建（失败即不可写），再用写-删探针确认可写。
+function ensureWritableHome(home) {
+  try {
+    mkdirSync(home, { recursive: true }); // 目录已存在时是空操作
+  } catch {
+    return false; // EACCES/EROFS 等：目录都建不出来，必然不可写
+  }
+  return isWritableHome(home);
+}
+
 function isWritableHome(home) {
   const probe = join(home, ".write-probe");
   try {
@@ -261,14 +284,19 @@ async function enforceRunningLimit(home, config) {
         status = fresh.status;
         tasks.updateTask(home, name, { lastStatus: status });
       }
-    } catch {
-      // 刷新失败（不可达/鉴权/任务已删）按本地记录算
+    } catch (error) {
+      if (error?.code === "zcode_send_failed" && error?.status === 404) {
+        // ZCode 侧已没有该任务（GUI 里删除）：置终态并落盘，不再占并发额度
+        status = "error";
+        tasks.updateTask(home, name, { lastStatus: status });
+      }
+      // 其余刷新失败（不可达/鉴权等）按本地记录算
     }
     if (!TERMINAL_STATUSES.has(status)) count += 1;
   }
   if (count >= maxRunning) {
     const err = new Error(
-      `zcode_too_many_running: 已有 ${count} 个任务未结束（上限 ${maxRunning}）。先 wait/stop 收尾，或用环境变量 ZCODE_SUB_MAX_RUNNING 调整上限。`,
+      `zcode_too_many_running: 已有 ${count} 个任务未结束（上限 ${maxRunning}）。先 wait/stop 收尾，或用环境变量 ZCODE_SUB_MAX_RUNNING 调整上限。GUI 里删除的旧任务在下次 run 时会自动释放额度。`,
     );
     err.code = "zcode_too_many_running";
     err.exitCode = 8;
@@ -287,24 +315,29 @@ async function cmdRun(home, flags) {
   const config = requireConfig(home);
   await enforceRunningLimit(home, config);
 
+  // 幂等键：网络失败自动重试时同键防双建；重名等场景可人工对账
+  const clientRequestId = "zsub-" + randomUUID();
   // 先建 ZCode 对话，再登记本地；名字冲突时 ZCode 侧已存在，要如实告知。
   const { taskId } = await api.createTask(config, {
     workspacePath: cwd,
     prompt: wrappedPrompt(name, cwd, taskText),
     title: name,
+    clientRequestId,
   });
   try {
-    tasks.registerTask(home, name, { taskId, workspacePath: cwd });
+    tasks.registerTask(home, name, { taskId, workspacePath: cwd, clientRequestId });
   } catch (error) {
     if (error?.code === "zcode_name_taken") {
       process.stderr.write(
-        `⚠ 任务已在 ZCode 创建（taskId=${taskId}）但本地名字冲突，换名重跑；或手动记下 taskId。\n`,
+        `⚠ 任务已在 ZCode 创建（taskId=${taskId}，clientRequestId=${clientRequestId}）但本地名字冲突，换名重跑；或手动记下 taskId。\n`,
       );
     }
     throw error;
   }
 
-  process.stdout.write(`${JSON.stringify({ name, taskId, status: "dispatched", workspacePath: cwd })}\n`);
+  process.stdout.write(
+    `${JSON.stringify({ name, taskId, status: "dispatched", workspacePath: cwd, clientRequestId })}\n`,
+  );
 }
 
 function wrappedPrompt(name, cwd, taskText) {
@@ -425,8 +458,21 @@ async function cmdWait(home, flags) {
     const lines = readMailboxLines(home, name);
     const cursor = readCursor(home, name);
     if (lines.length > cursor) {
-      for (const line of lines.slice(cursor)) {
-        process.stdout.write(`[reply] ${line.text}\n`);
+      const pending = lines.slice(cursor);
+      // 批级总量闸：累计超限即停止逐条打印（游标照常推进到全部行数，不丢数据）
+      let written = 0;
+      let printed = 0;
+      for (const line of pending) {
+        if (written >= WAIT_OUTPUT_LIMIT) break;
+        const text = `[reply] ${line.text}\n`;
+        process.stdout.write(text);
+        written += text.length;
+        printed += 1;
+      }
+      if (printed < pending.length) {
+        process.stdout.write(
+          `…（剩余 ${pending.length - printed} 条 reply 略过，全文见 ${mailboxPath(home, name)}）\n`,
+        );
       }
       writeCursor(home, name, lines.length);
       return;
@@ -455,14 +501,29 @@ async function cmdWait(home, flags) {
       continue;
     }
     if (events.length > 0) {
+      // 先扫全部事件定 lastStatus：被批级上限略过的事件也要参与终态判断
       const patch = { eventsSeq: payload.nextSeq };
       for (const event of events) {
-        writeEventLine(event);
-        if (event.type === "permission.requested") {
-          process.stdout.write("⏳ 请在 ZCode GUI 处理该权限请求\n");
-        }
         if (event.type === "turn.completed") patch.lastStatus = "idle";
         if (event.type === "turn.failed") patch.lastStatus = "error";
+      }
+      // 批级总量闸：累计超限即停止逐条打印（游标照常推进到 payload.nextSeq，不丢数据）
+      let written = 0;
+      let skipped = 0;
+      for (const event of events) {
+        if (written >= WAIT_OUTPUT_LIMIT) {
+          skipped += 1;
+          continue;
+        }
+        written += writeEventLine(event);
+        if (event.type === "permission.requested") {
+          const hint = "⏳ 请在 ZCode GUI 处理该权限请求\n";
+          process.stdout.write(hint);
+          written += hint.length;
+        }
+      }
+      if (skipped > 0) {
+        process.stdout.write(`…（本批剩余 ${skipped} 条略过，全文用 result 或 ZCode GUI 查看）\n`);
       }
       tasks.updateTask(home, name, patch);
       return;
@@ -473,17 +534,22 @@ async function cmdWait(home, flags) {
 
 // 事件正文超过 2000 字符只打印前 2000 字符（全文用 result / ZCode GUI 查看）；
 // reply 信箱行不截断（子代理对父代理的直接消息保持全文）。
+// 返回本次写入的字符数（含截断提示行），供调用方的批级总量闸（WAIT_OUTPUT_LIMIT）累计。
 const EVENT_TEXT_LIMIT = 2000;
 
 function writeEventLine(event) {
   const raw = event.text ?? event.error ?? event.summary ?? "";
   const text = typeof raw === "string" ? raw : String(raw);
-  if (text.length <= EVENT_TEXT_LIMIT) {
-    process.stdout.write(`[${event.type}] ${text}\n`);
-    return;
+  const lines = [`[${event.type}] ${text.length <= EVENT_TEXT_LIMIT ? text : text.slice(0, EVENT_TEXT_LIMIT)}\n`];
+  if (text.length > EVENT_TEXT_LIMIT) {
+    lines.push(`…（共 ${text.length} 字符，全文用 result 或 ZCode GUI 查看）\n`);
   }
-  process.stdout.write(`[${event.type}] ${text.slice(0, EVENT_TEXT_LIMIT)}\n`);
-  process.stdout.write(`…（共 ${text.length} 字符，全文用 result 或 ZCode GUI 查看）\n`);
+  let written = 0;
+  for (const line of lines) {
+    process.stdout.write(line);
+    written += line.length;
+  }
+  return written;
 }
 
 // ---------- list / mcp ----------

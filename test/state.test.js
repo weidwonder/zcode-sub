@@ -6,7 +6,7 @@ import { join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { test } from "node:test";
 import { loadConfig, saveConfig, createInitialConfig, updateConfig } from "../src/config.js";
-import { loadTasks, saveTasks, registerTask, updateTask, getTask, listTaskNames } from "../src/tasks.js";
+import { loadTasks, registerTask, updateTask, getTask, listTaskNames } from "../src/tasks.js";
 import { appendReplyLine, readMailboxLines, readCursor, writeCursor } from "../src/mailbox.js";
 import { assertValidName } from "../src/home.js";
 
@@ -154,17 +154,81 @@ test("任务更新：只动给定字段；不存在的 name 返回 null 不抛",
 test("listTaskNames 按创建时间升序", () => {
   const home = tempHome();
   try {
-    // 直接播种 createdAt，排序断言不依赖时钟
-    saveTasks(home, {
-      tasks: {
-        late: { taskId: "a", workspacePath: "/w", createdAt: 300, lastStatus: "dispatched", eventsSeq: 0 },
-        first: { taskId: "b", workspacePath: "/w", createdAt: 100, lastStatus: "dispatched", eventsSeq: 0 },
-        mid: { taskId: "c", workspacePath: "/w", createdAt: 200, lastStatus: "dispatched", eventsSeq: 0 },
-      },
-    });
+    // 直写分片播种（saveTasks 已删），createdAt 手工定死，排序断言不依赖时钟
+    mkdirSync(join(home, "tasks"), { recursive: true });
+    const seed = (name, createdAt) =>
+      writeFileSync(
+        shardPath(home, name),
+        `${JSON.stringify({ taskId: name, workspacePath: "/w", createdAt, lastStatus: "dispatched", eventsSeq: 0 }, null, 2)}\n`,
+        "utf8",
+      );
+    seed("late", 300);
+    seed("first", 100);
+    seed("mid", 200);
     assert.deepEqual(listTaskNames(home), ["first", "mid", "late"]);
     // 分片聚合顺序不保证（目录序），只断言集合
     assert.deepEqual(Object.keys(loadTasks(home).tasks).sort(), ["first", "late", "mid"]);
+  } finally {
+    rmSync(home, { recursive: true, force: true });
+  }
+});
+
+test("任务登记：clientRequestId 有则入分片并读回，无则不含该字段", () => {
+  const home = tempHome();
+  try {
+    const withKey = registerTask(home, "t1", {
+      taskId: "task-1",
+      workspacePath: "/tmp/ws",
+      clientRequestId: "req-1",
+    });
+    assert.equal(withKey.clientRequestId, "req-1");
+    assert.deepEqual(getTask(home, "t1"), withKey);
+    const raw = JSON.parse(readFileSync(shardPath(home, "t1"), "utf8"));
+    assert.equal(raw.clientRequestId, "req-1");
+    // 可选尾字段排在固定字段之后
+    assert.deepEqual(Object.keys(raw), [
+      "taskId",
+      "workspacePath",
+      "createdAt",
+      "lastStatus",
+      "eventsSeq",
+      "clientRequestId",
+    ]);
+
+    const without = registerTask(home, "t2", { taskId: "task-2", workspacePath: "/tmp/ws" });
+    assert.equal("clientRequestId" in without, false);
+    assert.equal("clientRequestId" in getTask(home, "t2"), false);
+    assert.equal("clientRequestId" in JSON.parse(readFileSync(shardPath(home, "t2"), "utf8")), false);
+  } finally {
+    rmSync(home, { recursive: true, force: true });
+  }
+});
+
+test("坏分片 registerTask：备份 .corrupt-* 后覆盖重登记；完好分片同名仍 zcode_name_taken", () => {
+  const home = tempHome();
+  try {
+    const dir = join(home, "tasks");
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(shardPath(home, "t1"), "{broken", "utf8");
+
+    const record = registerTask(home, "t1", { taskId: "task-new", workspacePath: "/tmp/ws" });
+    assert.equal(record.taskId, "task-new", "损坏分片不应挡登记（覆盖重登记）");
+    assert.equal(getTask(home, "t1").taskId, "task-new");
+    const backups = readdirSync(dir).filter((f) => f.startsWith("t1.json.corrupt-"));
+    assert.equal(backups.length, 1, `应出现恰一份 .corrupt-* 备份：${readdirSync(dir)}`);
+    assert.equal(readFileSync(join(dir, backups[0]), "utf8"), "{broken", "备份应保住原内容");
+    assert.equal(
+      readdirSync(dir).filter((f) => f === "t1.json").length,
+      1,
+      "重登记后同名分片应恰好一份且内容完好",
+    );
+
+    // 完好分片同名再登记照旧拒绝，原登记不受影响
+    assert.throws(
+      () => registerTask(home, "t1", { taskId: "task-x", workspacePath: "/tmp/ws2" }),
+      (err) => err.code === "zcode_name_taken" && err.exitCode === 7,
+    );
+    assert.equal(getTask(home, "t1").taskId, "task-new");
   } finally {
     rmSync(home, { recursive: true, force: true });
   }

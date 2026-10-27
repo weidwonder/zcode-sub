@@ -27,14 +27,16 @@ const debugLog = (line) => {
   }
 };
 
-export async function apiFetch(config, path, { method = "GET", body, timeoutMs = 10_000 } = {}) {
+export async function apiFetch(config, path, { method = "GET", body, timeoutMs = 10_000, retryOnNetworkError = false } = {}) {
   const url = `http://127.0.0.1:${config.apiPort}${path}`;
   const bodyText = body === undefined ? undefined : JSON.stringify(body);
   const debug = process.env.ZCODE_SUB_DEBUG === "1";
   // 网络类失败：GET 重试 1 次（同样的 path/body）；POST 不重试——创建/写入类请求
   // 失败时目标可能已执行（如任务可能已创建），自动重试会双建任务，直接进失败分支。
+  // 例外：调用方给了幂等键（retryOnNetworkError，如 createTask 带 clientRequestId，
+  // 端点侧短期去重保证同键返回同一任务），重试安全，与 GET 同路径重试 1 次。
   // HTTP 4xx/5xx 两类方法都不重试。
-  const maxAttempts = method === "POST" ? 1 : 2;
+  const maxAttempts = method === "POST" && !retryOnNetworkError ? 1 : 2;
   let lastError = null;
   for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
     try {
@@ -73,8 +75,10 @@ export async function apiFetch(config, path, { method = "GET", body, timeoutMs =
       }
     }
   }
+  // 防双建警告只对无幂等键的 POST 保留（sendMessage/stopTask）；带幂等键的 createTask
+  // 已自动重试过，失败消息不再催用户核对。
   const postHint =
-    method === "POST"
+    method === "POST" && !retryOnNetworkError
       ? "\n⚠ 本次为创建/写入类请求，失败时目标可能已执行（如任务可能已创建）——先用 zcode-sub list / ZCode GUI 核对，不要盲目重试。"
       : "";
   throw new ApiError(
@@ -101,12 +105,17 @@ export async function probeHealth(config) {
   };
 }
 
-export async function createTask(config, { workspacePath, prompt, title }) {
+export async function createTask(config, { workspacePath, prompt, title, clientRequestId }) {
   const { status, payload } = await apiFetch(config, "/api/tasks", {
     method: "POST",
-    body: { workspacePath, prompt, title },
+    body: { workspacePath, prompt, title, ...(clientRequestId ? { clientRequestId } : {}) },
+    // 有幂等键（端点侧按 clientRequestId 短期去重）才允许网络类失败重试，防双建
+    ...(clientRequestId ? { retryOnNetworkError: true } : {}),
   });
-  if (status === 201) return { taskId: payload.taskId };
+  // 201 = 新建；200 = clientRequestId 去重命中（端点复用已建任务，返回同一 taskId）
+  if ((status === 200 || status === 201) && typeof payload?.taskId === "string" && payload.taskId !== "") {
+    return { taskId: payload.taskId };
+  }
   if (status === 409 && payload?.error === "workspace_not_open") {
     throw new ApiError(
       "zcode_workspace_not_open",

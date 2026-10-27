@@ -7,7 +7,7 @@ import { after, before, test } from "node:test";
 import { startFakeZcode } from "./helpers/fake-zcode.js";
 import { loadConfig, saveConfig, updateConfig } from "../src/config.js";
 import { getTask, loadTasks, updateTask } from "../src/tasks.js";
-import { appendReplyLine } from "../src/mailbox.js";
+import { appendReplyLine, readCursor } from "../src/mailbox.js";
 
 const ROOT = join(import.meta.dirname, "..");
 const BIN = join(ROOT, "bin", "zcode-sub.js");
@@ -24,6 +24,7 @@ let setupHomeC; // setup 端口冲突用
 let setupDataC;
 let capHomeA; // 并发上限：默认上限 4 的场景
 let capHomeB; // 并发上限：ZCODE_SUB_MAX_RUNNING=2 的场景
+let ghostHome; // GUI 删除任务（刷新 404）释放并发额度的场景
 
 // fake Zcode 跑在本测试进程内，必须用异步 spawn——spawnSync 会冻结事件循环，
 // 让 fake 无法响应 CLI 子进程的请求。
@@ -73,10 +74,23 @@ before(async () => {
   capHomeB = mkdtempSync(join(tmpdir(), "zcode-sub-cap-b-"));
   saveConfig(capHomeA, { apiPort: fake.port, token: TOKEN });
   saveConfig(capHomeB, { apiPort: fake.port, token: TOKEN });
+  ghostHome = mkdtempSync(join(tmpdir(), "zcode-sub-ghost-"));
+  saveConfig(ghostHome, { apiPort: fake.port, token: TOKEN });
 });
 
 after(async () => {
-  for (const dir of [home, setupHomeA, setupHomeB, setupDataA, setupDataB, setupHomeC, setupDataC, capHomeA, capHomeB]) {
+  for (const dir of [
+    home,
+    setupHomeA,
+    setupHomeB,
+    setupDataA,
+    setupDataB,
+    setupHomeC,
+    setupDataC,
+    capHomeA,
+    capHomeB,
+    ghostHome,
+  ]) {
     rmSync(dir, { recursive: true, force: true });
   }
   await fake.stop();
@@ -195,6 +209,28 @@ test("setup：开关文件目录不可写 → 手动创建指引 + dwc grant 提
   }
 });
 
+test("setup：状态目录不可写 → exit 1 + dwc grant 指引，不裸崩", async () => {
+  if (typeof process.getuid === "function" && process.getuid() === 0) {
+    return; // root 模拟不了不可写
+  }
+  const roHome = mkdtempSync(join(tmpdir(), "zcode-sub-setup-rohome-"));
+  const roData = mkdtempSync(join(tmpdir(), "zcode-sub-setup-rodata2-"));
+  chmodSync(roHome, 0o551);
+  try {
+    const result = await runCli(["setup"], { ZCODE_SUB_HOME: roHome, ZCODE_DATA_BASE_DIR: roData });
+    assert.equal(result.status, 1, result.stderr);
+    assert.ok(result.stdout.includes(`✗ 状态目录不可写：${roHome}`), result.stdout);
+    assert.match(result.stdout, new RegExp(`请执行：dwc grant ${escapeForRegExp(roHome)}`));
+    assert.ok(!result.stderr.includes("mkdirSync"), `不应出现 Node 崩栈：\n${result.stderr}`);
+    assert.equal(result.stderr, "", "提前退出不应产生任何 stderr 输出");
+    assert.ok(!result.stdout.includes("本机任务 API"), "不可写时不应继续后续步骤");
+  } finally {
+    chmodSync(roHome, 0o700);
+    rmSync(roHome, { recursive: true, force: true });
+    rmSync(roData, { recursive: true, force: true });
+  }
+});
+
 test("run：stdout 一行 JSON；fake 收到 title/workspace/prompt；本地登记", async () => {
   const result = await runCli(["run", "修复登录页崩溃", "--cwd", "/tmp/demo", "--name", "fix-1"]);
   assert.equal(result.status, 0, result.stderr);
@@ -228,7 +264,53 @@ test("run：重名 → exit 7（ZCode 侧已创建、本地登记拒绝）", asy
   assert.equal(dup.status, 7);
   assert.match(dup.stderr, /zcode_name_taken/u);
   assert.match(dup.stderr, /taskId=/u, "应提示 ZCode 侧已创建的 taskId");
+  assert.match(dup.stderr, /clientRequestId=zsub-/u, "stderr 提示应附 clientRequestId 便于对账");
   settle("fix-1");
+});
+
+test("run：clientRequestId 贯穿 stdout JSON / createTask body / 本地分片", async () => {
+  const result = await runCli(["run", "幂等键任务", "--cwd", "/tmp/crid", "--name", "crid-1"]);
+  assert.equal(result.status, 0, result.stderr);
+  const payload = JSON.parse(result.stdout);
+  assert.match(payload.clientRequestId, /^zsub-[0-9a-f-]{36}$/u, "stdout JSON 应含 zsub- 前缀的 clientRequestId");
+
+  const createCall = fake.calls.find(
+    (call) => call.method === "POST" && call.url.split("?")[0] === "/api/tasks" && call.body?.title === "crid-1",
+  );
+  assert.ok(createCall, "应有 POST /api/tasks 调用");
+  assert.equal(createCall.body.clientRequestId, payload.clientRequestId, "createTask body 应带同一幂等键");
+
+  const shard = JSON.parse(readFileSync(join(home, "tasks", "crid-1.json"), "utf8"));
+  assert.equal(shard.clientRequestId, payload.clientRequestId, "本地分片应记录同一幂等键");
+  settle("crid-1");
+});
+
+test("run：ZCode 侧已删的任务刷新 404 → 置 error 终态，不占并发额度", async () => {
+  const ghostEnv = { ZCODE_SUB_HOME: ghostHome, ZCODE_SUB_MAX_RUNNING: "1" };
+  const a = await dispatchTask("ghost-a", "/tmp/ws-ghost-a", ghostEnv);
+  fake.createTaskAlreadyRunning(a.taskId);
+  updateTask(ghostHome, "ghost-a", { lastStatus: "running" });
+
+  // 模拟 GUI 删除后本地还留着旧登记：把分片 taskId 改成假值，fake 对未知 taskId 必然 404
+  const shardFile = join(ghostHome, "tasks", "ghost-a.json");
+  const shard = JSON.parse(readFileSync(shardFile, "utf8"));
+  assert.equal(shard.lastStatus, "running");
+  shard.taskId = "ghost-id";
+  writeFileSync(shardFile, `${JSON.stringify(shard, null, 2)}\n`);
+
+  // 若 ghost 仍占额度（未修复），这里会 exit 8
+  const second = await runCli(["run", "额度已释放", "--cwd", "/tmp/ws-ghost-b", "--name", "ghost-b"], ghostEnv);
+  assert.equal(second.status, 0, second.stderr);
+  assert.ok(
+    fake.calls.some(
+      (call) => call.method === "POST" && call.url.split("?")[0] === "/api/tasks" && call.body?.title === "ghost-b",
+    ),
+    "额度释放后应能建新任务",
+  );
+
+  const after = JSON.parse(readFileSync(shardFile, "utf8"));
+  assert.equal(after.lastStatus, "error", "ghost 任务应被 404 置为 error 终态落盘");
+  updateTask(ghostHome, "ghost-b", { lastStatus: "idle" });
 });
 
 test("run：--cwd 非绝对路径 → exit 1；省 --name 时自动生成 zsub- 名", async () => {
@@ -271,6 +353,7 @@ test("run：并发派发上限——4 个未结束第 5 个 exit 8；MAX_RUNNING
   assert.equal(fifth.status, 8, fifth.stderr);
   assert.match(fifth.stderr, /zcode_too_many_running/u);
   assert.match(fifth.stderr, /已有 4 个任务未结束（上限 4）/u);
+  assert.match(fifth.stderr, /自动释放额度/u, "exit 8 提示应含 GUI 删除释放额度的补句");
   assert.ok(
     !fake.calls.some(
       (call) => call.method === "POST" && call.url.split("?")[0] === "/api/tasks" && call.body?.title === "cap-5",
@@ -465,6 +548,61 @@ test("wait：事件正文超 2000 字符截断（reply 信箱行保持全文）"
   assert.equal(reply.status, 0, reply.stderr);
   assert.ok(reply.stdout.includes(`[reply] ${"y".repeat(3000)}`), "reply 信箱行不截断");
   settle("tr-1");
+});
+
+test("wait：事件批超 20000 字符 → 略过提示 + lastStatus/游标照常推进", async () => {
+  const { taskId } = await dispatchTask("bulk-ev");
+  for (let i = 0; i < 29; i += 1) {
+    fake.emitEvent(taskId, "assistant.message", { text: `e${i}-${"x".repeat(1500)}` });
+  }
+  // 终态事件藏在被略过的尾部：lastStatus 的判断必须先扫全部事件再决定打印多少
+  fake.emitEvent(taskId, "turn.completed", { text: "全部完成" });
+
+  const got = await runCli(["wait", "bulk-ev", "--timeout", "3"]);
+  assert.equal(got.status, 0, got.stderr);
+  assert.match(got.stdout, /…（本批剩余 \d+ 条略过，全文用 result 或 ZCode GUI 查看）/u);
+  assert.ok(got.stdout.length < 25_000, `stdout 应小于 25000 字符，实际 ${got.stdout.length}`);
+  assert.ok(got.stdout.includes("e0-"), "上限内的事件应照常打印");
+  assert.ok(!got.stdout.includes("e28-"), "超限后的事件不应逐条打印");
+  assert.ok(!got.stdout.includes("全部完成"), "被略过的终态事件正文也不打印");
+
+  // 游标照常推进到 nextSeq；被略过的 turn.completed 也要把 lastStatus 推到 idle
+  assert.equal(loadTasks(home).tasks["bulk-ev"].eventsSeq, 30);
+  assert.equal(loadTasks(home).tasks["bulk-ev"].lastStatus, "idle");
+
+  fake.emitEvent(taskId, "turn.failed", { error: "批次后失败" });
+  const failed = await runCli(["wait", "bulk-ev", "--timeout", "3"]);
+  assert.equal(failed.status, 0, failed.stderr);
+  assert.equal(loadTasks(home).tasks["bulk-ev"].lastStatus, "error");
+
+  // 再 wait 无新事件 → 长轮询挂起到超时 TIMEOUT（不重放已消费事件）
+  const t0 = Date.now();
+  const again = await runCli(["wait", "bulk-ev", "--timeout", "3"]);
+  assert.equal(again.status, 2);
+  assert.equal(again.stdout, "TIMEOUT\n");
+  assert.ok(Date.now() - t0 < 8000, `TIMEOUT 应在超时预算内返回，实际 ${Date.now() - t0}ms`);
+  settle("bulk-ev", "error");
+});
+
+test("wait：reply 批超 20000 字符 → 略过提示 + 游标推进到尾", async () => {
+  await dispatchTask("bulk-rp");
+  for (let i = 0; i < 15; i += 1) {
+    appendReplyLine(home, "bulk-rp", `r${i}-${"y".repeat(2000)}`);
+  }
+
+  const got = await runCli(["wait", "bulk-rp", "--timeout", "3"]);
+  assert.equal(got.status, 0, got.stderr);
+  assert.match(got.stdout, /…（剩余 \d+ 条 reply 略过，全文见 .*bulk-rp\.jsonl）/u);
+  assert.ok(got.stdout.includes(join(home, "mailboxes", "bulk-rp.jsonl")), "略过提示应含信箱文件绝对路径");
+  assert.ok(got.stdout.includes("r0-"), "上限内的 reply 应照常打印");
+  assert.ok(!got.stdout.includes("r14-"), "超限后的 reply 不应逐条打印");
+  assert.equal(readCursor(home, "bulk-rp"), 15, "游标应推进到全部行数");
+
+  // 游标已到尾：再 wait 无新 reply，不重放
+  const again = await runCli(["wait", "bulk-rp", "--timeout", "2"]);
+  assert.equal(again.status, 2);
+  assert.equal(again.stdout, "TIMEOUT\n");
+  settle("bulk-rp");
 });
 
 test("wait：ZCode 重启事件缓冲清空 → 游标回退继续等新事件", async () => {

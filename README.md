@@ -55,7 +55,7 @@ npm link            # 或把 bin/zcode-sub.js 加入 PATH；本仓库不发布 n
 - **权限请求不经本工具**：wait 收到 `permission.requested` 会提示去 ZCode GUI 处理（契约 v2 本版不通过 API 批权限）。
 - **事件缓冲与重启**：上游每任务事件有界缓冲（500 条），溢出时 wait 收到 `resync` 提示改用 result 轮询；ZCode 重启后事件缓冲清空、序号可能回退，wait 会重置游标继续等待。
 - **终态口径**：`result` 以 `GET /api/tasks/:id` 的 status 为准（idle/error 即终态，lastAssistantText 为最后回复；停止后完成事件文本可为空）。
-- **副作用安全**：创建/写入类 POST 失败不自动重试（防重复建任务），报错时会提示先用 `list`/GUI 核对。
+- **副作用安全**：建任务请求带 `clientRequestId` 幂等键（同键返回同一 taskId），网络失败同键安全重试一次；其余写入 POST 失败不自动重试，报错时会提示先用 `list`/GUI 核对。并发上限为尽力检查——多进程同时派发的瞬间可能超出。
 - 本工具不写 ZCode 的其他数据文件；开关文件仅 setup 显式写入（已存在时以它为准，`--api-port` 冲突报错不覆盖）。
 
 ## 开发

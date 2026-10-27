@@ -13,7 +13,6 @@ export function pathsOf(home) {
   return {
     home,
     configFile: join(home, "config.json"),
-    tasksFile: join(home, "tasks.json"),
     mailboxesDir: join(home, "mailboxes"),
   };
 }

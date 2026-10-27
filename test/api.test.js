@@ -61,7 +61,42 @@ test("createTask：201 返回 taskId，鉴权头与 Host 正确", async () => {
   assert.equal(record.body.workspacePath, "/w1");
   assert.equal(record.body.prompt, "做点事");
   assert.equal(record.body.title, "任务一");
+  assert.equal("clientRequestId" in record.body, false, "未传幂等键时 body 不得含 clientRequestId");
   assert.deepEqual(fake.createdTasks[taskId], { workspacePath: "/w1", title: "任务一", status: "idle" });
+});
+
+test("createTask：clientRequestId 进 body，同键二次 POST 去重命中 200 同 taskId 不双建", async () => {
+  const mark = fake.calls.length;
+
+  // 首次创建：端点收到该字段
+  const first = await createTask(config, { workspacePath: "/w-idem", prompt: "p", clientRequestId: "req-dup-1" });
+  assert.match(first.taskId, /^[0-9a-f-]{36}$/u);
+  let record = fake.calls.at(-1);
+  assert.equal(record.method, "POST");
+  assert.equal(record.url, "/api/tasks");
+  assert.equal(record.body.clientRequestId, "req-dup-1");
+
+  // 同键二次：返回同一 taskId，不双建
+  const second = await createTask(config, { workspacePath: "/w-idem", prompt: "p", clientRequestId: "req-dup-1" });
+  assert.equal(second.taskId, first.taskId, "同 clientRequestId 应复用同一任务");
+  assert.equal(fake.calls.length - mark, 2, "同键二次只应多一次调用");
+  const wsTasks = Object.entries(fake.createdTasks).filter(([, task]) => task.workspacePath === "/w-idem");
+  assert.equal(wsTasks.length, 1, `同 clientRequestId 不得双建任务：${JSON.stringify(fake.createdTasks)}`);
+  assert.equal(wsTasks[0][0], first.taskId);
+
+  // 状态码契约直核（createTask 只回 taskId）：首次创建 201，去重命中 200
+  const rawPost = () =>
+    rawRequest(fake.port, {
+      method: "POST",
+      path: "/api/tasks",
+      headers: { authorization: "Bearer test-token", "content-type": "application/json" },
+      body: JSON.stringify({ workspacePath: "/w-idem-raw", prompt: "p", clientRequestId: "req-dup-raw" }),
+    });
+  const rawFirst = await rawPost();
+  assert.equal(rawFirst.status, 201);
+  const rawSecond = await rawPost();
+  assert.equal(rawSecond.status, 200, "去重命中应是 200 而非 201");
+  assert.equal(rawSecond.body.taskId, rawFirst.body.taskId);
 });
 
 test("createTask：workspace 未打开 → zcode_workspace_not_open（exit 3），远端工作区同码", async () => {
@@ -221,6 +256,86 @@ test("POST 网络失败不重试（计数=1）且带防双建提示；GET 重试
       },
     );
     assert.equal(hits.get, 2, "GET 失败后应重试一次，共两次");
+  } finally {
+    server.closeAllConnections?.();
+    await new Promise((resolve) => server.close(() => resolve()));
+  }
+});
+
+test("带 clientRequestId 的 createTask：网络失败重试 1 次同键成功；unreachable 不带防双建提示；sendMessage 只发 1 次仍带", async () => {
+  const postHits = []; // 每次收到的 {pathname, clientRequestId}
+  let mode = "break-first"; // break-first：首个 /api/tasks 断连后转正常；always-break：一律断连
+  const server = createServer((request, response) => {
+    if (request.method !== "POST") {
+      response.destroy();
+      return;
+    }
+    let text = "";
+    request.on("data", (chunk) => (text += chunk));
+    request.on("end", () => {
+      const pathname = request.url.split("?")[0];
+      let reqId;
+      try {
+        reqId = JSON.parse(text).clientRequestId;
+      } catch {
+        reqId = undefined;
+      }
+      postHits.push({ pathname, clientRequestId: reqId });
+      if (pathname !== "/api/tasks" || mode !== "serve") {
+        if (pathname === "/api/tasks" && mode === "break-first") mode = "serve";
+        response.destroy();
+        return;
+      }
+      response.writeHead(201, { "content-type": "application/json" });
+      response.end(JSON.stringify({ taskId: "22222222-2222-4222-8222-222222222222" }));
+    });
+  });
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const cfg = { apiPort: server.address().port, token: "t" };
+  const taskPosts = () => postHits.filter((hit) => hit.pathname === "/api/tasks");
+  try {
+    // 首次断连 → 带幂等键自动重试一次成功，两次 body 的 clientRequestId 相同
+    const { taskId } = await createTask(cfg, { workspacePath: "/w", prompt: "p", clientRequestId: "req-retry-1" });
+    assert.equal(taskId, "22222222-2222-4222-8222-222222222222");
+    assert.deepEqual(
+      taskPosts().map((hit) => hit.clientRequestId),
+      ["req-retry-1", "req-retry-1"],
+      "应重试一次且两次 clientRequestId 相同",
+    );
+
+    // 始终断连：重试耗尽后 unreachable，且失败消息不带防双建提示（已自动重试过）
+    mode = "always-break";
+    const before = taskPosts().length;
+    await assert.rejects(
+      () => createTask(cfg, { workspacePath: "/w", prompt: "p", clientRequestId: "req-retry-2" }),
+      (error) => {
+        assert.equal(error.code, "zcode_api_unreachable");
+        assert.equal(error.exitCode, 2);
+        assert.ok(
+          !error.message.includes("不要盲目重试"),
+          `带幂等键的 POST 失败消息不应带防双建提示：${error.message}`,
+        );
+        return true;
+      },
+    );
+    assert.equal(taskPosts().length - before, 2, "带幂等键的网络失败应重试一次共两次");
+
+    // 对照：sendMessage（无幂等键 POST）同场景只发 1 次，失败消息仍带防双建提示
+    const msgBefore = postHits.length;
+    await assert.rejects(
+      () => sendMessage(cfg, "task-x", "你好"),
+      (error) => {
+        assert.equal(error.code, "zcode_api_unreachable");
+        assert.ok(error.message.includes("不要盲目重试"), `无幂等键 POST 失败消息应带防双建提示：${error.message}`);
+        return true;
+      },
+    );
+    const msgHits = postHits.slice(msgBefore);
+    assert.deepEqual(
+      msgHits.map((hit) => hit.pathname),
+      ["/api/tasks/task-x/messages"],
+      "无幂等键 POST 不得重试（只发 1 次）",
+    );
   } finally {
     server.closeAllConnections?.();
     await new Promise((resolve) => server.close(() => resolve()));

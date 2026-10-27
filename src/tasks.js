@@ -4,10 +4,11 @@ import { assertValidName, isValidName } from "./home.js";
 import { atomicWriteJson } from "./config.js";
 
 // 任务登记表：每任务一分片 <home>/tasks/<name>.json，
-// 内容 { taskId, workspacePath, createdAt, lastStatus, eventsSeq }。
+// 内容 { taskId, workspacePath, createdAt, lastStatus, eventsSeq, clientRequestId? }。
 // 分片替代旧单文件 tasks.json 的读改写——旧实现在多进程并发登记时会互相
 // 覆盖丢登记，现在登记走独占创建（wx），同名竞态恰好只有一方成功。
-// taskId 指向 ZCode 本机任务 API 的任务；eventsSeq 只反映本机已见的事件数。
+// taskId 指向 ZCode 本机任务 API 的任务；eventsSeq 只反映本机已见的事件数；
+// clientRequestId 是派发时的幂等键（有才存），供端点侧短期去重对账。
 
 function tasksDirOf(home) {
   return join(home, "tasks");
@@ -31,7 +32,8 @@ function nameTakenError(name) {
 }
 
 // 读单个分片。missing → { missing: true }；不是合法 JSON 对象 → { corrupt: true }；
-// 正常 → { record }。损坏不在读取时备份：备份是写副作用，只留给 updateTask。
+// 正常 → { record }。损坏不在读取时备份：备份是写副作用，只留给写路径
+// （updateTask 备份后按不存在；registerTask 备份后覆盖重登记）。
 function readShard(file) {
   let raw;
   try {
@@ -80,16 +82,7 @@ export function loadTasks(home) {
   return { tasks };
 }
 
-export function saveTasks(home, store) {
-  const dir = ensureTasksDir(home);
-  for (const [name, record] of Object.entries(store?.tasks ?? {})) {
-    assertValidName(name);
-    atomicWriteJson(join(dir, `${name}.json`), record);
-  }
-  return store;
-}
-
-export function registerTask(home, name, { taskId, workspacePath }) {
+export function registerTask(home, name, { taskId, workspacePath, clientRequestId }) {
   assertValidName(name);
   const file = join(ensureTasksDir(home), `${name}.json`);
   const record = {
@@ -98,13 +91,26 @@ export function registerTask(home, name, { taskId, workspacePath }) {
     createdAt: Date.now(),
     lastStatus: "dispatched",
     eventsSeq: 0,
+    ...(clientRequestId ? { clientRequestId } : {}),
   };
+  const text = `${JSON.stringify(record, null, 2)}\n`;
   // 独占创建：两进程同时登记同名，只有抢先建文件的一方落盘
   try {
-    writeFileSync(file, `${JSON.stringify(record, null, 2)}\n`, { flag: "wx" });
+    writeFileSync(file, text, { flag: "wx" });
   } catch (err) {
-    if (err.code === "EEXIST") throw nameTakenError(name);
-    throw err;
+    if (err.code !== "EEXIST") throw err;
+    // 同名分片是损坏文件（解析失败/非纯对象）时，登记会陷入"换名也没用"的死局：
+    // 先备份坏分片，再覆盖重登记（评审 N3 方案①）。分片完好则照旧拒绝。
+    const shard = readShard(file);
+    if (!shard.corrupt) throw nameTakenError(name);
+    backupCorruptShard(file);
+    try {
+      writeFileSync(file, text, { flag: "wx" });
+    } catch (retryErr) {
+      // 备份失败（如权限）坏文件仍在原地，按同名占用处理
+      if (retryErr.code === "EEXIST") throw nameTakenError(name);
+      throw retryErr;
+    }
   }
   return record;
 }

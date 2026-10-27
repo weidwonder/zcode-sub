@@ -25,6 +25,7 @@ const ROUTES = [
 export async function startFakeZcode({ token = "test-token", port: listenPort = 0, zcodeVersion = "test-1.0.0" } = {}) {
   const calls = []; // 非 health 请求的 {method,url,headers,body}
   const tasks = new Map(); // taskId -> 任务对象（含事件队列与 seq 计数器）
+  const createReqIds = new Map(); // clientRequestId -> taskId（POST /api/tasks 短期去重）
   const ownership = new Map(); // taskId -> workspacePath（A 侧归属表；forgetOwnership 模拟重启丢表）
   const resyncPending = new Set(); // 下一次 events 请求要返回 {resync:true} 的 taskId
   const sockets = new Set();
@@ -166,6 +167,13 @@ export async function startFakeZcode({ token = "test-token", port: listenPort = 
       const requestedWs = query.get("workspacePath") ?? undefined;
 
       if (method === "POST" && pathname === "/api/tasks") {
+        // 幂等键短期去重：非空 clientRequestId 命中已建任务 → 直接 200 复用（不双建；
+        // 注意首次创建是 201，去重命中是 200），其余校验照旧
+        const reqId = typeof body.clientRequestId === "string" && body.clientRequestId !== "" ? body.clientRequestId : null;
+        if (reqId !== null && createReqIds.has(reqId)) {
+          json(response, 200, { taskId: createReqIds.get(reqId) });
+          return;
+        }
         // 未打开的工作区（远端工作区同码）→ 409
         if (body.workspacePath === "/workspace-closed" || body.workspacePath === "/workspace-remote") {
           json(response, 409, { error: "workspace_not_open" });
@@ -174,6 +182,7 @@ export async function startFakeZcode({ token = "test-token", port: listenPort = 
         const task = newTask(body.workspacePath, body.title);
         tasks.set(task.taskId, task);
         ownership.set(task.taskId, task.workspacePath); // createTask 登记归属
+        if (reqId !== null) createReqIds.set(reqId, task.taskId);
         json(response, 201, { taskId: task.taskId });
         return;
       }
