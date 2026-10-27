@@ -82,7 +82,9 @@ ensure_pnpm() {
     log "pnpm: $(command -v pnpm) ($(pnpm --version))［工具链副本］"
     return 0
   fi
-  log "pnpm $PNPM_VERSION 不可用（当前 $(command -v pnpm || echo 无) $((pnpm --version 2>/dev/null || echo '') )），安装到 $PNPM_HOME_TC"
+  local cur_pnpm; cur_pnpm="$(command -v pnpm || true)"
+  local cur_ver; cur_ver="$(pnpm --version 2>/dev/null || true)"
+  log "pnpm ${PNPM_VERSION} 不可用（当前 ${cur_pnpm:-无} ${cur_ver}），安装到 ${PNPM_HOME_TC}"
   if [[ $DRY_RUN -eq 1 ]]; then
     log "dry-run：将用 node $NODE_VERSION 的 npm 安装 pnpm@$PNPM_VERSION 到 ${PNPM_HOME_TC}（--prefix，不动全局）"
     export PATH="$TOOLCHAIN_ROOT/node-v$NODE_VERSION/bin:$PATH"
