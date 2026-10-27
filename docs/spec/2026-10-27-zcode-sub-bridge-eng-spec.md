@@ -120,7 +120,7 @@ v1 的 seq/dispatch/status/notice 行语义删除；daemon.json、daemon.log、c
 | 接口 | 入参 | 出参 | 调用方 | 版本 |
 |---|---|---|---|---|
 | `GET /health`（上游） | — | `{ok,api:"zcode-local-task-api",version:2,zcodeVersion}` | setup | v2 |
-| `POST /api/tasks`（上游） | Bearer；`{workspacePath,prompt,mode?,title?,clientRequestId?}` | 201 `{taskId}`（首建）；同 `clientRequestId` 去重命中 200 返回同一 `{taskId}`；409 `{error:"workspace_not_open"}` | run | v2 |
+| `POST /api/tasks`（上游） | Bearer；`{workspacePath,prompt,mode?,title?,clientRequestId?}` | 201 `{taskId}` 或 `{taskId,warning:"first_prompt_failed"}`（部分失败，任务已建）；同 `clientRequestId` 去重命中 200 返回同一 `{taskId}`；mode 非法 400；409 `{error:"workspace_not_open"}` | run | v2 |
 | `POST /api/tasks/:id/messages`（上游） | `{text,delivery?:"auto"\|"queue"\|"steer"}` | 202 `{delivery:"sent"\|"queued"\|"steered",commandId?}`；404 | send/resume | v2 |
 | `POST /api/tasks/:id/stop`（上游） | — | 202 | stop | v2 |
 | `GET /api/tasks/:id`（上游） | — | `{taskId,workspacePath,title,status,turnCount,lastAssistantText,updatedAt}` | result/resume/wait(resync) | v2 |
@@ -134,7 +134,9 @@ v1 的 seq/dispatch/status/notice 行语义删除；daemon.json、daemon.log、c
 - **本集成不做哪些写操作**：不批权限、不写 ZCode 数据文件（开关文件按契约第 1 条「由用户或桥接程序 setup 写入」，仅 setup 显式执行）。
 - **B 依赖的字段级契约（与 A 实装对齐后的终值）**：
   - `events[i]`：`seq`（每任务从 1 单调，缓冲 500，溢出 `{resync:true}`）、`at`（毫秒）、`type` ∈ turn.started / assistant.message / turn.completed / turn.failed / permission.requested / input.queued / input.steered；payload 字段 `turn.started{turnId}`、`assistant.message{text}`、`turn.completed{text}`（停止后 text 可为空）、`turn.failed{error}`、`permission.requested{summary}`、`input.queued|steered{commandId}`。
-  - `POST /api/tasks` 的 `title` 传 name；可选 `clientRequestId` 为短期去重幂等键（命中返回同一 taskId，状态码 200）——run 生成 `zsub-<uuid>` 并记入本地分片；`turnCount` 为快照中 assistant 消息条数。
+  - `POST /api/tasks` 的 `title` 传 name；可选 `clientRequestId` 为去重幂等键（**1..200 字符、10 分钟窗口**，命中返回同一 taskId、状态码 200）——run 生成 `zsub-<uuid>`（41 字符）并记入本地分片，重试间隔毫秒级远在窗口内；可选 `mode` 为 11 值枚举（default/yolo/guarded/plan/edit/acceptEdits/auto/dontAsk/bypassPermissions/autoEdit/build），非法 400——CLI 当前不传 mode（取 GUI 默认），`zcode-sub run` 无 `--mode`；`turnCount` 为快照中 assistant 消息条数。
+  - **create 部分失败**（偏离 #13）：首条 prompt 发送失败仍回 `201 {taskId, warning:"first_prompt_failed"}`——B 照常登记，stdout JSON 带 `warning` 字段、stderr 提示用 send 补发、退出码 0（任务已建，非零会误判整轮失败）。
+  - **op 异常**（偏离 #14）：Host 退出时在飞请求结清为 `503 {error:"unavailable_host"}`——B 视为暂态：GET/带幂等键的 createTask 重试一次，其余 POST 不重试，最终失败报 `zcode_api_unreachable`（exit 2，文案带 unavailable_host）。
   - `GET /api/tasks/:id` 的 `lastAssistantText` 为最近一条完整助手回复（idle 时即最终回复）。
   - 停止后上游发 `turn.completed`（text 空），无独立 stopped 状态/事件——result 以 status（idle）为准。
   - **所有按 taskId 的端点接受可选 workspacePath**（GET `?workspacePath=`、POST body）——ZCode 重启丢归属表时据此路由并校验；B 一律携带。

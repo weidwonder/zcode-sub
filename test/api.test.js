@@ -112,6 +112,30 @@ test("createTask：workspace 未打开 → zcode_workspace_not_open（exit 3）�
   );
 });
 
+test("createTask：mode 白名单——越界 400 bad_mode→zcode_create_failed（exit 1）且先于 409；合法值放行进 body", async () => {
+  // 偏离#11：mode 越界 → 端点 400 {error:"bad_mode"}，客户端映射 zcode_create_failed
+  await assert.rejects(
+    () => createTask(config, { workspacePath: "/w-mode", prompt: "p", title: "t", mode: "bogus" }),
+    (error) => error.code === "zcode_create_failed" && error.exitCode === 1 && error.status === 400,
+  );
+  // 400 先于 409 工作区检查（对齐偏离#7「body 参数校验先于归属判定」）：未打开工作区 + 越界 mode → 400
+  await assert.rejects(
+    () => createTask(config, { workspacePath: "/workspace-closed", prompt: "p", mode: "bogus" }),
+    (error) => error.code === "zcode_create_failed" && error.status === 400,
+  );
+
+  // 合法值（11 枚举之一）正常 201，且原样进请求 body
+  const { taskId } = await createTask(config, { workspacePath: "/w-mode", prompt: "p", title: "t", mode: "plan" });
+  assert.match(taskId, /^[0-9a-f-]{36}$/u);
+  const record = fake.calls.at(-1);
+  assert.equal(record.body.mode, "plan");
+
+  // 未传 mode 时 body 不得含该键
+  const { taskId: plainId } = await createTask(config, { workspacePath: "/w-mode", prompt: "p", title: "t2" });
+  assert.equal("mode" in fake.calls.at(-1).body, false, "未传 mode 时 body 不得含 mode 键");
+  assert.notEqual(plainId, taskId);
+});
+
 test("sendMessage：空闲任务 sent；运行中任务 auto→queued、steer→steered", async () => {
   const { taskId } = await createTask(config, { workspacePath: "/w2", prompt: "p" });
 
@@ -340,6 +364,79 @@ test("带 clientRequestId 的 createTask：网络失败重试 1 次同键成功�
     server.closeAllConnections?.();
     await new Promise((resolve) => server.close(() => resolve()));
   }
+});
+
+test("unavailable_host（503）：视为暂态——GET 重试 1 次、无幂等 POST 只 1 次、带幂等 POST 重试后仍失败", async () => {
+  fake.setOpUnavailable(true);
+  try {
+    // GET：重试 1 次共 2 次，最终 zcode_api_unreachable（exit 2，status 503）
+    const getMark = fake.calls.length;
+    await assert.rejects(
+      () => getTask(config, "uh-1"),
+      (error) => {
+        assert.equal(error.code, "zcode_api_unreachable");
+        assert.equal(error.exitCode, 2);
+        assert.equal(error.status, 503);
+        assert.ok(error.message.includes("unavailable_host"), `消息应含 unavailable_host：${error.message}`);
+        return true;
+      },
+    );
+    assert.equal(fake.calls.length - getMark, 2, "GET 应重试 1 次共 2 次请求");
+
+    // 无幂等键 POST（sendMessage）：不重试只 1 次
+    const msgMark = fake.calls.length;
+    await assert.rejects(
+      () => sendMessage(config, "uh-1", "你好"),
+      (error) => {
+        assert.equal(error.code, "zcode_api_unreachable");
+        assert.equal(error.exitCode, 2);
+        assert.ok(error.message.includes("unavailable_host"), `消息应含 unavailable_host：${error.message}`);
+        return true;
+      },
+    );
+    assert.equal(fake.calls.length - msgMark, 1, "无幂等键 POST 不得重试，只 1 次请求");
+
+    // 带幂等键 POST（createTask）：重试 1 次后仍 503 → exit 2 共 2 次请求
+    const postMark = fake.calls.length;
+    await assert.rejects(
+      () => createTask(config, { workspacePath: "/w-uh", prompt: "p", clientRequestId: "req-uh-1" }),
+      (error) => {
+        assert.equal(error.code, "zcode_api_unreachable");
+        assert.equal(error.exitCode, 2);
+        assert.ok(error.message.includes("unavailable_host"), `消息应含 unavailable_host：${error.message}`);
+        return true;
+      },
+    );
+    assert.equal(fake.calls.length - postMark, 2, "带幂等键 POST 应重试 1 次共 2 次请求");
+  } finally {
+    fake.setOpUnavailable(false);
+  }
+});
+
+test("unavailable_host：第一次请求后立刻恢复（setOpUnavailable(false)）→ 同幂等键重试成功", async () => {
+  fake.setOpUnavailable(true);
+  const mark = fake.calls.length;
+  const pending = createTask(config, { workspacePath: "/w-uh2", prompt: "p", clientRequestId: "req-uh-2" });
+  // 竞态写法：轮询 calls 长度，第一次请求一到 fake（吃 503）就立刻关掉开关再等重试。
+  // setImmediate 轮询在 check 相位运行，必先于任何后续 poll 相位（重试请求的到达），
+  // 所以开关一定在重试被处理之前关掉，不会撞上第二次 503。
+  const t0 = Date.now();
+  while (fake.calls.length <= mark && Date.now() - t0 < 5000) {
+    await new Promise((resolve) => setImmediate(resolve));
+  }
+  fake.setOpUnavailable(false);
+
+  const { taskId } = await pending;
+  assert.match(taskId, /^[0-9a-f-]{36}$/u);
+  assert.equal(fake.calls.length - mark, 2, "应恰好一次 503 + 一次成功重试");
+  assert.ok(fake.createdTasks[taskId], "重试应真正建出任务");
+});
+
+test("unavailable_host：setOpUnavailable(false) 后恢复正常（sanity）", async () => {
+  fake.setOpUnavailable(false);
+  const { taskId } = await createTask(config, { workspacePath: "/w-uh3", prompt: "p" });
+  assert.match(taskId, /^[0-9a-f-]{36}$/u);
+  assert.deepEqual(fake.createdTasks[taskId], { workspacePath: "/w-uh3", title: "", status: "idle" });
 });
 
 test("Host 头不对 → 403 bad_host（鉴权与 Content-Type 之前）", async () => {

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, before, test } from "node:test";
@@ -268,11 +268,18 @@ test("run：重名 → exit 7（ZCode 侧已创建、本地登记拒绝）", asy
   settle("fix-1");
 });
 
-test("run：clientRequestId 贯穿 stdout JSON / createTask body / 本地分片", async () => {
+test("run：clientRequestId 贯穿 stdout JSON / createTask body / 本地分片；长度规则 41 在 1..200 窗口内", async () => {
   const result = await runCli(["run", "幂等键任务", "--cwd", "/tmp/crid", "--name", "crid-1"]);
   assert.equal(result.status, 0, result.stderr);
   const payload = JSON.parse(result.stdout);
   assert.match(payload.clientRequestId, /^zsub-[0-9a-f-]{36}$/u, "stdout JSON 应含 zsub- 前缀的 clientRequestId");
+
+  // 偏离#12：生成规则钉住——"zsub-" 前缀 + 36 字符 UUID，总长 41，落在端点 1..200 长度窗口内。
+  // 窗口时效无需专门用例：网络失败同键重试在同一请求循环内毫秒级完成
+  // （见 api.test.js「网络失败重试 1 次同键成功」），远小于端点短期去重的 10 分钟窗口。
+  assert.equal("zsub-".length + 36, 41, "生成规则：zsub-（5 字符）+ UUID（36 字符）= 41");
+  assert.equal(payload.clientRequestId.length, 41);
+  assert.ok(payload.clientRequestId.length >= 1 && payload.clientRequestId.length <= 200, "应在 1..200 长度窗口内");
 
   const createCall = fake.calls.find(
     (call) => call.method === "POST" && call.url.split("?")[0] === "/api/tasks" && call.body?.title === "crid-1",
@@ -283,6 +290,50 @@ test("run：clientRequestId 贯穿 stdout JSON / createTask body / 本地分片"
   const shard = JSON.parse(readFileSync(join(home, "tasks", "crid-1.json"), "utf8"));
   assert.equal(shard.clientRequestId, payload.clientRequestId, "本地分片应记录同一幂等键");
   settle("crid-1");
+});
+
+test("run：create 带回 first_prompt_failed → 照常登记、exit 0，stdout 带 warning，stderr 给补发指引", async () => {
+  fake.failNextCreatePrompt();
+  const result = await runCli(["run", "首条没送达的任务正文", "--cwd", "/tmp/fpf", "--name", "fpf-1"]);
+  // 退出码保持 0：任务已建、登记成功，非零会让父代理误判整个 run 失败
+  assert.equal(result.status, 0, result.stderr);
+  const payload = JSON.parse(result.stdout);
+  assert.equal(payload.name, "fpf-1");
+  assert.equal(payload.status, "dispatched");
+  assert.match(payload.taskId, /^[0-9a-f-]{36}$/u);
+  assert.equal(payload.warning, "first_prompt_failed", "stdout JSON 应带 warning 字段");
+  assert.equal(result.stdout.trim().split("\n").length, 1, "stdout 应仍只有一行 JSON");
+
+  // stderr：首条未送达说明 + 补发指引（含任务名）
+  assert.ok(result.stderr.includes("首条消息未送达"), `stderr 应含未送达说明：${result.stderr}`);
+  assert.ok(result.stderr.includes("first_prompt_failed"), result.stderr);
+  assert.ok(
+    result.stderr.includes(`zcode-sub send fpf-1 "<原始任务全文>" 补发`),
+    `stderr 应含带任务名的补发指引：${result.stderr}`,
+  );
+
+  // 任务照常登记：list --json 可见、分片存在
+  const list = await runCli(["list", "--json"]);
+  assert.equal(list.status, 0, list.stderr);
+  assert.ok(
+    JSON.parse(list.stdout).tasks.some((task) => task.name === "fpf-1"),
+    "list --json 应能看到 fpf-1",
+  );
+  assert.ok(existsSync(join(home, "tasks", "fpf-1.json")), "本地分片应存在");
+  assert.equal(getTask(home, "fpf-1").taskId, payload.taskId);
+
+  // fake 侧确实创建了任务（201 且 warning 没有吞掉建任务动作）
+  assert.deepEqual(
+    fake.createdTasks[payload.taskId],
+    { workspacePath: "/tmp/fpf", title: "fpf-1", status: "idle" },
+  );
+  assert.ok(
+    fake.calls.some(
+      (call) => call.method === "POST" && call.url.split("?")[0] === "/api/tasks" && call.body?.title === "fpf-1",
+    ),
+    "fake.calls 里应有 fpf-1 的建任务请求",
+  );
+  settle("fpf-1");
 });
 
 test("run：ZCode 侧已删的任务刷新 404 → 置 error 终态，不占并发额度", async () => {

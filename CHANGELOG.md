@@ -29,6 +29,7 @@
 
 ### 变更（评审二轮）
 
+- 对齐上游偏离 #11~#14：create 部分失败（`201 {taskId, warning:"first_prompt_failed"}`）照常登记并以 JSON `warning` 字段 + stderr 补发提示告知（退出码 0，任务已建）；op 异常 `503 {error:"unavailable_host"}` 视为暂态（GET/带幂等键 createTask 重试一次，最终失败报 `zcode_api_unreachable`）；假端点补 mode 11 值枚举（非法 400）与 clientRequestId 1..200/10 分钟窗口口径；run 不暴露 `--mode`（缺省取 GUI 默认）。
 - `POST /api/tasks` 携带 `clientRequestId` 幂等键（run 生成 `zsub-<uuid>` 并记入本地分片；上游同键去重返回同一 taskId）：createTask 网络失败改为**同键安全重试一次**，撤回上条「POST 一律不重试」中对建任务的保守禁令；messages/stop 仍不重试。
 - wait 单次输出总量上限 20000 字符：超出后剩余事件/reply 降级为一行「剩余 N 条略过 + 获取方式」，游标照常推进不重放（单条 2000 截断之外新增批级闸）。
 - 并发额度刷新遇 404（任务已在 GUI 删除）时本地置 `error` 终态自动释放额度；exit 8 提示同步。

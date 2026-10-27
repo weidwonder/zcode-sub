@@ -66,6 +66,12 @@ export async function apiFetch(config, path, { method = "GET", body, timeoutMs =
           { exitCode: 5, status: response.status },
         );
       }
+      if (response.status === 503 && payload?.error === "unavailable_host") {
+        // 偏离#14：Host 退出/重启窗口，ZCode 把在飞请求立即结清为 503 unavailable_host。
+        // 视为网络类暂态失败——抛普通错误（不是 ApiError，那会绕过重试）进上面的重试循环
+        // （GET / 带幂等键的 POST 再试 1 次）；重试仍失败在循环外给专属文案。
+        throw new Error("unavailable_host");
+      }
       return { status: response.status, payload };
     } catch (error) {
       if (error instanceof ApiError) throw error;
@@ -74,6 +80,15 @@ export async function apiFetch(config, path, { method = "GET", body, timeoutMs =
         debugLog(`${new Date().toISOString()} ${method} ${path} → ERR ${error.message}`);
       }
     }
+  }
+  // unavailable_host 专属文案：Host 重启/窗口关闭是暂态，给"稍后重试"而不是
+  // "连不上"的排查指引；结清意味着请求未执行，不带防双建提示。
+  if (lastError?.message === "unavailable_host") {
+    throw new ApiError(
+      "zcode_api_unreachable",
+      "zcode_api_unreachable: ZCode 侧 Host 不可用（unavailable_host，可能正在重启/窗口已关闭），稍后重试。",
+      { exitCode: 2, status: 503 },
+    );
   }
   // 防双建警告只对无幂等键的 POST 保留（sendMessage/stopTask）；带幂等键的 createTask
   // 已自动重试过，失败消息不再催用户核对。
@@ -105,16 +120,28 @@ export async function probeHealth(config) {
   };
 }
 
-export async function createTask(config, { workspacePath, prompt, title, clientRequestId }) {
+export async function createTask(config, { workspacePath, prompt, title, mode, clientRequestId }) {
   const { status, payload } = await apiFetch(config, "/api/tasks", {
     method: "POST",
-    body: { workspacePath, prompt, title, ...(clientRequestId ? { clientRequestId } : {}) },
+    body: {
+      workspacePath,
+      prompt,
+      title,
+      // mode 可选（偏离#11 枚举见端点白名单）；CLI 暂无 --mode，仅为接口完备
+      ...(mode ? { mode } : {}),
+      ...(clientRequestId ? { clientRequestId } : {}),
+    },
     // 有幂等键（端点侧按 clientRequestId 短期去重）才允许网络类失败重试，防双建
     ...(clientRequestId ? { retryOnNetworkError: true } : {}),
   });
-  // 201 = 新建；200 = clientRequestId 去重命中（端点复用已建任务，返回同一 taskId）
+  // 201 = 新建；200 = clientRequestId 去重命中（端点复用已建任务，返回同一 taskId）。
+  // 两种状态上游都可能带 warning（偏离#13：任务已建但首条 prompt 投递失败
+  // → warning="first_prompt_failed"），非空字符串原样透传给调用方。
   if ((status === 200 || status === 201) && typeof payload?.taskId === "string" && payload.taskId !== "") {
-    return { taskId: payload.taskId };
+    return {
+      taskId: payload.taskId,
+      ...(typeof payload.warning === "string" && payload.warning ? { warning: payload.warning } : {}),
+    };
   }
   if (status === 409 && payload?.error === "workspace_not_open") {
     throw new ApiError(

@@ -4,13 +4,29 @@ import { randomUUID } from "node:crypto";
 // 假 ZCode 本机任务 API：按契约 v2 模拟（/health、/api/tasks 全家、Host+Bearer+
 // Content-Type+413 校验、每任务事件队列与长轮询、resync 溢出、归属表与游标回退），
 // 供测试驱动 src/api.js。
-// 校验顺序对齐 A 侧实装：路由级 404/405 → Host 403 → Bearer 401 → 415 → 413 → 400。
+// 校验顺序对齐 A 侧实装：路由级 404/405 → Host 403 → Bearer 401 → 415 → 413 → 400
+// （POST /api/tasks 另有 mode 白名单 400，先于 409 工作区检查——对齐偏离#7）。
 // 控制方法（用例驱动）：createTaskAlreadyRunning / emitEvent / setTaskStatus /
 // setLastAssistantText / createdTasks / calls / simulateResync / forgetOwnership /
-// resetEventSeq / stop。
+// resetEventSeq / failNextCreatePrompt / setOpUnavailable / stop。
 
 const MAX_WAIT_MS = 30_000;
 const MAX_BODY_CHARS = 16 * 1024 * 1024; // 413 阈值：16MiB
+
+// 偏离#11：create 接受的 mode 枚举（body.mode 为 undefined/合法值放行，越界 400 bad_mode）
+const MODE_WHITELIST = new Set([
+  "default",
+  "yolo",
+  "guarded",
+  "plan",
+  "edit",
+  "acceptEdits",
+  "auto",
+  "dontAsk",
+  "bypassPermissions",
+  "autoEdit",
+  "build",
+]);
 
 // 路由表：路径级 404/405 在鉴权之前判定
 const ROUTES = [
@@ -32,6 +48,8 @@ export async function startFakeZcode({ token = "test-token", port: listenPort = 
   let commandCounter = 0;
   let port = listenPort;
   let shuttingDown = false;
+  let failNextCreatePromptFlag = false; // 一次性：下一次建任务回 201 + warning first_prompt_failed
+  let opUnavailableFlag = false; // Host 退出模拟：开启后全部 op 请求结清 503 unavailable_host
 
   const newTask = (workspacePath, title) => ({
     taskId: randomUUID(),
@@ -127,6 +145,13 @@ export async function startFakeZcode({ token = "test-token", port: listenPort = 
       const record = { method, url: request.url, headers: request.headers, body: {} };
       calls.push(record);
 
+      // 偏离#14 控制开关：Host 退出/重启窗口——已识别路由的全部 op 请求（非 /health）
+      // 一律立即结清为 503 unavailable_host（后续校验都不再走，模拟在飞请求被清掉）
+      if (opUnavailableFlag) {
+        json(response, 503, { error: "unavailable_host" });
+        return;
+      }
+
       // 2) Host 403：A 侧只收 127.0.0.1/localhost 的 Host
       const host = String(request.headers.host ?? "");
       if (host !== `127.0.0.1:${port}` && host !== `localhost:${port}`) {
@@ -174,16 +199,24 @@ export async function startFakeZcode({ token = "test-token", port: listenPort = 
           json(response, 200, { taskId: createReqIds.get(reqId) });
           return;
         }
+        // 偏离#11：mode 白名单 400 先于 409 工作区检查（body 参数校验先于归属判定）
+        if (body.mode !== undefined && !MODE_WHITELIST.has(body.mode)) {
+          json(response, 400, { error: "bad_mode" });
+          return;
+        }
         // 未打开的工作区（远端工作区同码）→ 409
         if (body.workspacePath === "/workspace-closed" || body.workspacePath === "/workspace-remote") {
           json(response, 409, { error: "workspace_not_open" });
           return;
         }
+        // 偏离#13 一次性开关：任务照常创建，但回 201 + warning（首条 prompt 投递失败）
+        const firstPromptFailed = failNextCreatePromptFlag;
+        failNextCreatePromptFlag = false;
         const task = newTask(body.workspacePath, body.title);
         tasks.set(task.taskId, task);
         ownership.set(task.taskId, task.workspacePath); // createTask 登记归属
         if (reqId !== null) createReqIds.set(reqId, task.taskId);
-        json(response, 201, { taskId: task.taskId });
+        json(response, 201, { taskId: task.taskId, ...(firstPromptFailed ? { warning: "first_prompt_failed" } : {}) });
         return;
       }
 
@@ -349,6 +382,16 @@ export async function startFakeZcode({ token = "test-token", port: listenPort = 
       task.updatedAt = Date.now();
       for (const wake of [...task.waiters]) wake();
       task.waiters.clear();
+    },
+    // 偏离#13 一次性：下一次 POST /api/tasks 照常建任务，但回 201 {taskId, warning:
+    // "first_prompt_failed"}（首条 prompt 投递失败）；再下一次 create 恢复正常 201
+    failNextCreatePrompt() {
+      failNextCreatePromptFlag = true;
+    },
+    // 偏离#14：模拟 Host 退出——开启后全部 op 请求（非 /health）立即结清为
+    // 503 {error:"unavailable_host"}；关闭后恢复正常
+    setOpUnavailable(enabled) {
+      opUnavailableFlag = enabled === true;
     },
     stop() {
       shuttingDown = true;

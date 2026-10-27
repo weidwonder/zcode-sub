@@ -318,7 +318,7 @@ async function cmdRun(home, flags) {
   // 幂等键：网络失败自动重试时同键防双建；重名等场景可人工对账
   const clientRequestId = "zsub-" + randomUUID();
   // 先建 ZCode 对话，再登记本地；名字冲突时 ZCode 侧已存在，要如实告知。
-  const { taskId } = await api.createTask(config, {
+  const { taskId, warning } = await api.createTask(config, {
     workspacePath: cwd,
     prompt: wrappedPrompt(name, cwd, taskText),
     title: name,
@@ -335,8 +335,23 @@ async function cmdRun(home, flags) {
     throw error;
   }
 
+  // 偏离#13：任务已创建但首条 prompt 未送达——登记照常、退出码保持 0（任务已建，
+  // 非零会让父代理误判整个 run 失败），stderr 给补发指引、stdout JSON 带 warning 字段。
+  if (warning === "first_prompt_failed") {
+    process.stderr.write(
+      `⚠ 任务已创建（taskId=${taskId}）但首条消息未送达（first_prompt_failed）。用 zcode-sub send ${name} "<原始任务全文>" 补发。\n`,
+    );
+  }
+
   process.stdout.write(
-    `${JSON.stringify({ name, taskId, status: "dispatched", workspacePath: cwd, clientRequestId })}\n`,
+    `${JSON.stringify({
+      name,
+      taskId,
+      status: "dispatched",
+      workspacePath: cwd,
+      clientRequestId,
+      ...(warning ? { warning } : {}),
+    })}\n`,
   );
 }
 
