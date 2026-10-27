@@ -1,0 +1,85 @@
+# ZCode 补丁版工具链
+
+用开源 ZCode 源码（3.16.2）+ 本地补丁构建桌面版，保留登录态与任务历史，替换或并存于正式版（3.16.3），并在上游发版后低成本跟上。
+
+兼容性结论、身份方案对比与证据：`../docs/report/zcode-patched-build-compat.md`（下称「报告」）。本文只给操作步骤。
+
+## 脚本一览
+
+| 脚本 | 作用 |
+|---|---|
+| `backup-zcode-data.sh [备份目录] [--minimal] [--dry-run]` | 备份 `~/.zcode`（SQLite 在线备份 + 配置文件），默认到 `/Users/weidwonder/projects/zcode-backups/<时间戳>/` |
+| `build-desktop.sh <ZCode源码目录> [--identity preview\|production] [--skip-install] [--dry-run]` | 构建补丁版（mac arm64），默认 Preview 身份 |
+| `install-desktop.sh <产物 .app/.dmg> [--no-sign] [--yes] [--dry-run]` | 安装到 /Applications（身份自动判定目标；旧包移入备份区） |
+| `rollback-desktop.sh [--from <快照>] [--list] [--yes] [--dry-run]` | 把 /Applications 里的包回滚到备份区快照 |
+| `sync-upstream.sh <ZCode源码目录> [--dry-run]` | fetch 上游 → 建补丁分支 → cherry-pick → typecheck/lint |
+
+全部脚本：`set -euo pipefail`；支持 `--dry-run`；可重复执行；`EACCES` 时提示 `dwc grant <目录>`；`git` 一律 `-c safe.directory='*'`。
+
+## 流程一：首次替换（推荐 Preview 并存）
+
+```bash
+cd /Users/weidwonder/projects/zcode-sub
+# 0. 备份数据（984 MB 会话库在线备份，几分钟）
+patch/backup-zcode-data.sh
+# 1. 构建（默认 --identity preview：ZCode Preview.app，与正式版并存，强更门/自动更新天然跳过）
+patch/build-desktop.sh /Users/weidwonder/projects/ZCode
+# 2. 安装（Preview 产物装到 /Applications/ZCode Preview.app，不动正式版）
+patch/install-desktop.sh '/Users/weidwonder/projects/ZCode/packages/desktop/dist/mac-arm64/ZCode Preview.app'
+# 3. 打开「ZCode Preview」验证：应免登录（凭据共享）、历史任务在、Webhook Bot 功能可用
+```
+
+回退：直接打开正式版 ZCode 即可（Preview 可留着或拖进废纸篓，不影响正式版）。
+
+### 变体：production 原地替换（方案 B）
+
+```bash
+patch/build-desktop.sh /Users/weidwonder/projects/ZCode --identity production
+patch/install-desktop.sh /Users/weidwonder/projects/ZCode/packages/desktop/dist/mac-arm64/ZCode.app
+```
+
+替换后正式版旧包在 `zcode-backups/apps/ZCode-3.16.3-<时间戳>.app`，回退用 `patch/rollback-desktop.sh --list` 挑一份恢复。**选这个方案前读报告 §3/§6**：强更门敞口（服务端一旦下发 minimalVersion>3.16.2 补丁版启动即被拦）、签名丢失（CUA 的辅助功能/录屏要重新授权）。
+
+## 流程二：上游更新（上游 sync 了新版本）
+
+```bash
+# 1. 同步：fetch → local/patched-<上游SHA> 分支 → cherry-pick 补丁 → typecheck/lint
+patch/sync-upstream.sh /Users/weidwonder/projects/ZCode
+#    冲突时脚本停下并打印冲突文件清单；解决后在该仓库里 git cherry-pick --continue
+#    （补丁提交清单固定在 patch/series；不填则自动取 feat/local-bot-webhook 的非 chore(local-dw): 提交）
+# 2. 在 local/patched-* 分支上重新构建安装（同流程一；build 脚本对任意 checkout 的目录都可用）
+# 3. 先备份数据再替换：patch/backup-zcode-data.sh
+```
+
+若上游新版本引入了新迁移（升级后账本出现本分支清单外的条目），替换前把报告 §1.3 的 checksum 比对重跑一遍（报告附录有方法）。
+
+## 流程三：回滚
+
+```bash
+patch/rollback-desktop.sh --list                 # 看可回滚快照
+patch/rollback-desktop.sh                        # 恢复最近一份
+patch/rollback-desktop.sh --from zcode-backups/apps/ZCode-3.16.3-20261027-220000.app
+```
+
+回滚只动 .app，不动 `~/.zcode` 数据——3.16.3 读 3.16.2 写过的数据是向前方向，安全（报告 §5）。
+
+### 数据恢复（仅在数据异常时）
+
+```bash
+# 备份完整性校验
+cd /Users/weidwonder/projects/zcode-backups/<时间戳> && shasum -a 256 -c sha256sums.txt
+# 退出 ZCode 后，用 zcode/ 下同名文件覆盖 ~/.zcode 对应文件（sqlite-backup 产物是自包含快照）
+# 例：cp zcode-backups/<时间戳>/zcode/v2/tasks-index.sqlite ~/.zcode/v2/tasks-index.sqlite
+```
+
+数据恢复是覆盖用户数据的动作，工具链只提供备份与校验，**不自动执行**。
+
+## 已知风险与限制
+
+1. **强更门（仅 production 身份）**：服务端 `/api/v1/client/configs` 下发 `forceUpdate.minimalVersion` 高于 3.16.2 时，补丁版启动即被拦（弹窗只能升级或退出；断网可绕过但应用不可用）。Preview 身份不受影响（官方代码显式跳过）。
+2. **签名**：开源构建产物未签名（macOS 签名默认关），install 默认 ad-hoc 重签。CUA（computer use）的辅助功能/录屏授权绑定签名，替换后首次使用需重新授权；不用 CUA 则无感。
+3. **CUA helper 可能缺**：开源构建在无私有 producer 时不随包携带 computer-use helper（报告 §2.2）——依赖 CUA 的场景先实机验证。
+4. **降级数据损耗**：3.16.2 打开 3.16.3 写过的数据已验证安全（报告 §1），但补丁版使用期间修改设置会抹掉 3.16.3 新增的设置键；尽量少动设置。
+5. **`.dmg` 安装**：支持（只读挂载提取 .app），优先用 build 输出的 unpacked .app 目录，更快。
+6. **本座位不能装**：`/Applications` 写权限受限的环境（dwc 座位）跑 install 会报 EACCES——按提示 `dwc grant /Applications` 后由用户环境执行。
+7. **Node 工具链**：首次构建会下载 Node 24.14.0 到 `/Users/weidwonder/projects/.toolchains/`（约 40 MB，npmmirror 镜像），不改全局 Node。

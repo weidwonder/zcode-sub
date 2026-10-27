@@ -1,0 +1,7 @@
+# ZCode 本地补丁提交清单（patch/series）
+# 一行一个提交 SHA，按应用顺序排列；'#' 开头与空行忽略。
+# '! <命令>' 行：cherry-pick 全部通过后要跑的自定义校验命令（如补丁契约测试）。
+# 本文件为空（无 SHA 行）时，sync-upstream.sh 自动取 ZCode 仓库 feat/local-bot-webhook
+# 分支上非 chore(local-dw): 前缀的提交。
+# 当前状态（2026-10-27）：feat/local-bot-webhook 上只有 chore(local-dw): 前缀的本地初始化
+# 提交，功能补丁尚未落分支；功能补丁落分支后按需把 SHA 固定到这里。
