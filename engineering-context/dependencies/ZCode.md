@@ -13,8 +13,8 @@
 | 接口名 | 调用点（文件:行） | 注意事项 |
 |---|---|---|
 | `pnpm bundle:desktop`（上游根 package.json script） | patch/build-desktop.sh:178 | 内部串行 prepare→build→electron-builder→产物机械校验，勿拆步调用 |
-| `ZCODE_ENV` / `ZCODE_PREVIEW_IDENTITY` / `ZCODE_AUTO_UPDATE`（上游构建期环境变量协议） | patch/build-desktop.sh:131-109 | `ZCODE_ENV` 缺省按 test 后端处理，连生产必须显式 `=production`；`ZCODE_AUTO_UPDATE=0` 只关自动更新、关不掉强更门 |
-| 迁移账本表 `schema_migration`（会话库）/ `tasks_schema_migration` 与项目存储 `schema_migration`（tasks-index 库） | patch/verify-migration-checksums.mjs:89,119,148（readLedger 三处） | 只读查询；checksum 规则三组不同（sha256(sql.trim()) 与 sha256(JSON.stringify(checksumInput))），门检脚本已内置 |
+| `ZCODE_ENV` / `ZCODE_PREVIEW_IDENTITY` / `ZCODE_AUTO_UPDATE`（上游构建期环境变量协议） | patch/build-desktop.sh#BUILD_ENV（构建环境组装段）| `ZCODE_ENV` 缺省按 test 后端处理，连生产必须显式 `=production`；`ZCODE_AUTO_UPDATE=0` 只关自动更新、关不掉强更门 |
+| 迁移账本表 `schema_migration`（会话库）/ `tasks_schema_migration` 与项目存储 `schema_migration`（tasks-index 库） | patch/verify-migration-checksums.mjs#readLedger（三处调用：会话库 / 任务索引 / 项目存储账本） | 只读查询；checksum 规则三组不同（sha256(sql.trim()) 与 sha256(JSON.stringify(checksumInput))），门检脚本已内置 |
 | 数据布局 `getAppConfigDir()`（`~/.zcode/v2`）与 `cli/db/db.sqlite` | patch/backup-zcode-data.sh:55-63 | 凭据/设置/bot 配置在 `v2/`、会话库在 `cli/db/`；与 flavor 无关（Preview 与 production 共享） |
 | `credentials.json`（凭据文件，AES-256-GCM、密钥本机派生） | patch/backup-zcode-data.sh:59（备份范围含 v2/*.json） | 备份只读复制+哈希，MUST NOT 在日志打印内容；解密与签名无关 |
 | `feat/local-bot-webhook`（上游补丁开发分支） | patch/sync-upstream.sh:12,64（series 读取）；patch/series（净提交清单） | 分支含 v1 引入+revert 对冲对，MUST NOT 自动取全部非 chore 提交；净提交由派发者固化进 series |

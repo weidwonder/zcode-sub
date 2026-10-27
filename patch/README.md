@@ -9,7 +9,7 @@
 | 脚本 | 作用 |
 |---|---|
 | `backup-zcode-data.sh [备份目录] [--minimal] [--dry-run]` | 备份 `~/.zcode`（SQLite 在线备份 + 配置文件），默认到 `/Users/weidwonder/projects/zcode-backups/<时间戳>/` |
-| `build-desktop.sh <ZCode源码目录> [--identity preview\|production] [--skip-install] [--dry-run]` | 构建补丁版（mac arm64），默认 Preview 身份 |
+| `build-desktop.sh <ZCode源码目录> [--identity preview\|production] [--skip-install] [--no-dmg] [--dry-run]` | 构建补丁版（mac arm64），默认 Preview 身份 |
 | `install-desktop.sh <产物 .app/.dmg> [--no-sign] [--yes] [--dry-run]` | 安装到 /Applications（身份自动判定目标；旧包移入备份区） |
 | `rollback-desktop.sh [--from <快照>] [--list] [--yes] [--dry-run]` | 把 /Applications 里的包回滚到备份区快照 |
 | `sync-upstream.sh <ZCode源码目录> [--dry-run]` | fetch 上游 → 建补丁分支 → cherry-pick → typecheck/lint |

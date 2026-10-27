@@ -16,7 +16,7 @@ while [[ $# -gt 0 ]]; do
   case "$1" in
     --dry-run) DRY_RUN=1; shift ;;
     --minimal) MINIMAL=1; shift ;;
-    -h|--help) sed -n '2,10p' "$0"; exit 0 ;;
+    -h|--help) sed -n '2,5p' "$0"; exit 0 ;;
     -*) die "未知参数：$1" ;;
     *)
       [[ -n "$BACKUP_DIR" ]] && die "只接受一个位置参数（备份目录），已收到：$BACKUP_DIR 与 $1"

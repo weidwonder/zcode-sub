@@ -18,11 +18,11 @@ while [[ $# -gt 0 ]]; do
     --dry-run) DRY_RUN=1; shift ;;
     --no-sign) DO_SIGN=0; shift ;;
     --yes) ASSUME_YES=1; shift ;;
-    -h|--help) sed -n '2,6p' "$0"; exit 0 ;;
+    -h|--help) sed -n '2,5p' "$0"; exit 0 ;;
     *) ARTIFACT="$1"; shift ;;
   esac
 done
-[[ -n "$ARTIFACT" ]] || { sed -n '2,6p' "$0"; echo "用法：$0 <产物 .app 目录或 .dmg> [--no-sign] [--yes] [--dry-run]"; exit 1; }
+[[ -n "$ARTIFACT" ]] || { sed -n '2,5p' "$0"; echo "用法：$0 <产物 .app 目录或 .dmg> [--no-sign] [--yes] [--dry-run]"; exit 1; }
 [[ -e "$ARTIFACT" ]] || die "产物不存在：$ARTIFACT"
 
 # ---- 定位 .app ----

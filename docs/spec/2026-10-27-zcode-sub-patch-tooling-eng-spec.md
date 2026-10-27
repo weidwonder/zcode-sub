@@ -5,6 +5,7 @@ archived: ''
 last_confirmed: '2026-10-28'
 authority_refs:
   - 'patch/*.sh 五个脚本的 CLI 接口（参数、--dry-run、退出码约定）'
+  - 'patch/verify-migration-checksums.mjs 的 CLI 与退出码约定（0=全匹配含 SKIP-DYN；1=DIFF/EXTRA/取数错误）'
   - 'patch/backup-zcode-data.sh 的备份范围与 manifest 格式（zcode-backups/<ts>/manifest.json）'
   - 'patch/series 序列文件格式（SHA 行 / # 注释 / ! 自定义校验行）与 local/patched-<短SHA> 分支命名约定'
   - 'docs/report/zcode-patched-build-compat.md 的降级兼容性结论（安全，附证据）'
@@ -23,7 +24,7 @@ authority_refs:
   1. 用户首次替换：`patch/backup-zcode-data.sh`（保全数据）→ `patch/build-desktop.sh /Users/weidwonder/projects/ZCode`（构建补丁版）→ `patch/install-desktop.sh <产物>`（替换/并存）→ 打开 ZCode 验证登录态与历史任务。
   2. 上游发新版（如 3.16.4）：`patch/sync-upstream.sh /Users/weidwonder/projects/ZCode`（fetch → 重建补丁分支 → cherry-pick 补丁提交 → 冲突即停并打印文件清单 → typecheck/lint）→ 通过后重跑 build/install。
   3. 补丁版有问题要回退：`patch/rollback-desktop.sh`（从 `zcode-backups/apps/` 恢复上一份正式版 .app）；数据层回滚按 `patch/README.md` 的手动步骤用备份目录恢复。
-  4. 构建期身份选错（连了测试后端）：`build-desktop.sh` 默认 `ZCODE_ENV=production`，不设该值时脚本 MUST 报错中止，不允许产出测试后端包冒充正式包。
+  4. 构建期身份选错（连了测试后端）：`build-desktop.sh` 无条件以 `ZCODE_ENV=production` 组装构建环境（外部漏设不可能进入构建进程），后端环境不存在错配路径，杜绝测试后端包冒充正式包。
 - **核心流程图**：
   ```mermaid
   flowchart TD
@@ -130,6 +131,7 @@ authority_refs:
 | install-desktop.sh | `<产物路径 .app/.dmg>` `--no-sign` `--yes` `--dry-run` | 0=安装完成；1=错误；3=目标 app 运行中（不杀，提示退出后重试） | 用户 |
 | rollback-desktop.sh | `[--from <快照>]` `--yes` `--dry-run` `--list` | 0=回滚完成；1=错误；3=运行中；`--list` 只列快照 | 用户 |
 | sync-upstream.sh | `<ZCode源码目录>` `--dry-run` | 0=同步+校验通过；1=环境错误；4=cherry-pick 冲突（现场保留）；5=typecheck/lint 失败 | 派发者 |
+| verify-migration-checksums.mjs | `<ZCode源码目录>` `--zcode-root=<目录>` | 0=可精确验证项全匹配（含 SKIP-DYN/SKIP-SCOPE 标注）；1=DIFF/EXTRA 任一或取数/提取错误 | 用户/派发者（上游更新后替换安装前必跑） |
 
 约定（全部脚本共同）：
 - `set -euo pipefail`；shebang `#!/usr/bin/env bash`。
@@ -222,6 +224,7 @@ authority_refs:
 | `--skip-install`（build） | flag | 否 | 关 | 跳过 pnpm install |
 | `--no-dmg`（build） | flag | 否 | 关 | zip 通路：跳过 DMG 与 bundle.mjs 收尾机械校验（受限沙箱 hdiutil 必败时用） |
 | 备份根目录 | 环境变量 `ZCODE_BACKUP_ROOT` | 否 | `/Users/weidwonder/projects/zcode-backups` | 所有备份/旧 app 快照的根 |
+| 源数据根 | 环境变量 `ZCODE_ROOT` | 否 | `/Users/weidwonder/.zcode` | backup 的源数据根（排障/模拟用；与备份目标根 `ZCODE_BACKUP_ROOT` 是两个不同开关） |
 
 ## 7. 可观测性
 

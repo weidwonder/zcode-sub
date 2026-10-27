@@ -21,11 +21,11 @@ g() { git -c safe.directory='*' "$@"; }
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --dry-run) DRY_RUN=1; shift ;;
-    -h|--help) sed -n '2,8p' "$0"; exit 0 ;;
+    -h|--help) sed -n '2,6p' "$0"; exit 0 ;;
     *) SRC="$1"; shift ;;
   esac
 done
-[[ -n "$SRC" ]] || { sed -n '2,8p' "$0"; echo "用法：$0 <ZCode源码目录> [--dry-run]"; exit 1; }
+[[ -n "$SRC" ]] || { sed -n '2,6p' "$0"; echo "用法：$0 <ZCode源码目录> [--dry-run]"; exit 1; }
 [[ -d "$SRC/.git" || -f "$SRC/.git" ]] || die "$SRC 不是 git 仓库"
 
 # ---- 写权限预检（受限环境给 dwc grant 提示，不绕过）----

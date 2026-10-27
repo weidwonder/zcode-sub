@@ -39,12 +39,12 @@ while [[ $# -gt 0 ]]; do
     --dry-run) DRY_RUN=1; shift ;;
     --no-dmg) NO_DMG=1; shift ;;
     --skip-install) SKIP_INSTALL=1; shift ;;
-    -h|--help) sed -n '2,12p' "$0"; exit 0 ;;
+    -h|--help) sed -n '2,9p' "$0"; exit 0 ;;
     *) SRC="$1"; shift ;;
   esac
 done
 [[ "$IDENTITY" == "preview" || "$IDENTITY" == "production" ]] || die "--identity 只支持 preview|production，收到：$IDENTITY"
-[[ -n "$SRC" ]] || { sed -n '2,12p' "$0"; echo "用法：$0 <ZCode源码目录> [--identity preview|production] [--skip-install] [--dry-run]"; exit 1; }
+[[ -n "$SRC" ]] || { sed -n '2,9p' "$0"; echo "用法：$0 <ZCode源码目录> [--identity preview|production] [--skip-install] [--no-dmg] [--dry-run]"; exit 1; }
 [[ -f "$SRC/package.json" && -f "$SRC/pnpm-workspace.yaml" ]] || die "$SRC 不是 ZCode 源码仓库根（缺 package.json / pnpm-workspace.yaml）"
 
 # ---- Node 24.14.0 工具链 ----
@@ -178,12 +178,13 @@ else
   run_in_src pnpm bundle:desktop -- --os mac --arch arm64 || {
     # 失败兜底：DMG 阶段失败（受限沙箱 hdiutil 必败）时 zip/.app 往往已产出——有产物即算成功
     APP_OK=0; ZIP_OK=0
-    [[ -d "$DIST_DIR/mac-arm64/$PRODUCT_NAME.app" ]] && APP_OK=1
+    NEW_APP="$(find "$DIST_DIR/mac-arm64" -maxdepth 1 -name "$PRODUCT_NAME.app" -newermt "@$START_TS" 2>/dev/null | head -1 || true)"
+    [[ -n "$NEW_APP" ]] && APP_OK=1
     NEW_ZIP="$(find "$DIST_DIR" -maxdepth 1 -name '*-mac-arm64.zip' -newermt "@$START_TS" 2>/dev/null | head -1 || true)"
     [[ -n "$NEW_ZIP" ]] && ZIP_OK=1
     if [[ $APP_OK -eq 1 || $ZIP_OK -eq 1 ]]; then
       log "警告：bundle:desktop 整体失败（多见于 DMG 阶段，受限沙箱内 hdiutil 必败），但产物已生成："
-      [[ $APP_OK -eq 1 ]] && log "  unpacked app：$DIST_DIR/mac-arm64/$PRODUCT_NAME.app"
+      [[ $APP_OK -eq 1 ]] && log "  unpacked app：$NEW_APP"
       [[ $ZIP_OK -eq 1 ]] && log "  zip：$NEW_ZIP"
       log "  （bundle.mjs 的收尾机械校验未执行，装包后首启自验；受限环境可用 --no-dmg 直接走 zip 通路）"
     else
