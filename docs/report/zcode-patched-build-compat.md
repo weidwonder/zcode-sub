@@ -2,7 +2,7 @@
 lifecycle: active
 superseded_by: ''
 archived: ''
-last_confirmed: '2026-10-27'
+last_confirmed: '2026-10-28'
 authority_refs:
   - 'ZCode 3.16.2（origin/main 3c5b2276）打开 3.16.3 数据的降级兼容性结论与证据'
   - '登录态/凭据在 app 替换与 Preview 并存两种形态下的保留结论'
@@ -13,7 +13,7 @@ authority_refs:
 
 > 调查对象：开源 ZCode 源码（`/Users/weidwonder/projects/ZCode`，origin/main 3c5b2276 = 3.16.2，2026-10-20 sync）与用户当前安装（`/Applications/ZCode.app` = 3.16.3，官方签名 8A5X4JJ39T）。
 > 方法边界：只读开源源码 + 用户数据目录元数据 + 只读 SQLite 查询；**未**解包/反编译官方安装包（asar/字节码未触碰）；对生产 API 只发起了客户端启动时的标准配置查询。
-> **时效声明**：所有「用户库当前状态」类结论以 2026-10-27 的库快照为准；服务端 minimalVersion 状态随时可变；上游后续 sync 可能改变迁移清单，届时须重验。
+> **时效声明**：所有「用户库当前状态」类结论以 2026-10-27 的库快照为准；上游快照与服务端状态的权威登记处在 `engineering-context/dependencies/ZCode.md` 的状态行（本文与卡片里的具体 SHA/版本号以该行为准）；上游后续 sync 可能改变迁移清单，届时用 `patch/verify-migration-checksums.mjs` 重验。
 
 ## 结论速览
 

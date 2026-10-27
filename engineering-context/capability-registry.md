@@ -14,6 +14,10 @@
 | Capability | 权威实现 | 陷阱项（废弃或中间产物） |
 |---|---|---|
 | 【能力，如 背单词记录】 | 【现在该改/该调的那一个，如 POST /v2/word/record 或 src/word/record.ts】 | 【相似但不该用的旧实现，如 POST /v1/word/record；确实没有就写 无】 |
+| ZCode mac 桌面构建（Preview/production 双身份） | 上游 `pnpm bundle:desktop` + `ZCODE_ENV`/`ZCODE_PREVIEW_IDENTITY`/`ZCODE_AUTO_UPDATE` 环境变量协议，本仓入口 `patch/build-desktop.sh`；上游事实见 `engineering-context/dependencies/ZCode/构建身份与打包.md` | `ZCODE_ENV` 缺省按 test 后端处理——连生产必须显式 `=production` |
+| ZCode 强制升级门与自动更新 | 上游 `maybeBlockStartupForForceUpdate`（production+打包态启用，Preview 显式跳过）；上游事实见 `engineering-context/dependencies/ZCode/更新与强制升级.md` | `ZCODE_AUTO_UPDATE=0` 关不掉强更门——两道门独立 |
+| ZCode 用户数据备份与降级门检 | 本仓 `patch/backup-zcode-data.sh`（sqlite3 在线备份）+ `patch/verify-migration-checksums.mjs`（三组迁移账本 checksum）；上游事实见 `engineering-context/dependencies/ZCode/数据目录与迁移.md` | 直接文件复制备份会话库——WAL 活跃必撕裂，改用 sqlite3 `.backup` |
+| ZCode 登录态保留（凭据与签名解耦） | 上游 `credentialCipherProvider`（密钥本机派生，不用钥匙串）；上游事实见 `engineering-context/dependencies/ZCode/凭据与登录态.md` | 无 |
 
 ## 能力表（完整形态）
 

@@ -2,10 +2,11 @@
 lifecycle: active
 superseded_by: ''
 archived: ''
-last_confirmed: '2026-10-27'
+last_confirmed: '2026-10-28'
 authority_refs:
   - 'patch/*.sh 五个脚本的 CLI 接口（参数、--dry-run、退出码约定）'
   - 'patch/backup-zcode-data.sh 的备份范围与 manifest 格式（zcode-backups/<ts>/manifest.json）'
+  - 'patch/series 序列文件格式（SHA 行 / # 注释 / ! 自定义校验行）与 local/patched-<短SHA> 分支命名约定'
   - 'docs/report/zcode-patched-build-compat.md 的降级兼容性结论（安全，附证据）'
 ---
 
@@ -65,10 +66,10 @@ authority_refs:
 
 | 既有模块 / 机制 | 从哪知道它的 | 本次可能怎么碰到 | 卡片补了吗 |
 |---|---|---|---|
-| ZCode 桌面构建身份（production/preview 双轴） | `packages/desktop/scripts/desktop-product-identity.mjs:59-68` | build-desktop.sh 设环境变量选身份 | 本次新补 `cards/zcode/构建身份与打包.md` |
-| 强制升级门 maybeBlockStartupForForceUpdate | `packages/desktop/src/main/index.ts:2521-2532` | production 产物受其约束，报告评估 | 本次新补 `cards/zcode/更新与强制升级.md` |
-| SQLite 迁移账本（schema_migration / tasks_schema_migration / project-storage schema_migration） | `packages/shared/src/sqlite-migrations/runner.ts:62-100` | 备份脚本在线备份这些库；报告结论 | 本次新补 `cards/zcode/数据目录与迁移.md` |
-| 凭据加密 credentialCipherProvider（本地派生密钥，与签名无关） | `packages/services/src/credential/providers/credentialCipherProvider.ts:24-38` | 报告论证登录态保留 | 本次新补 `cards/zcode/凭据与登录态.md` |
+| ZCode 桌面构建身份（production/preview 双轴） | `packages/desktop/scripts/desktop-product-identity.mjs:59-68` | build-desktop.sh 设环境变量选身份 | 本次新补 `dependencies/ZCode/构建身份与打包.md`（上游事实卡，落依赖目录） |
+| 强制升级门 maybeBlockStartupForForceUpdate | `packages/desktop/src/main/index.ts:2521-2532` | production 产物受其约束，报告评估 | 本次新补 `dependencies/ZCode/更新与强制升级.md`（同上） |
+| SQLite 迁移账本（schema_migration / tasks_schema_migration / project-storage schema_migration） | `packages/shared/src/sqlite-migrations/runner.ts:62-100` | 备份脚本在线备份这些库；报告结论 | 本次新补 `dependencies/ZCode/数据目录与迁移.md`（同上） |
+| 凭据加密 credentialCipherProvider（本地派生密钥，与签名无关） | `packages/services/src/credential/providers/credentialCipherProvider.ts:24-38` | 报告论证登录态保留 | 本次新补 `dependencies/ZCode/凭据与登录态.md`（同上） |
 | pnpm workspace 构建（install → prepare:runtime-assets → build → electron-builder） | `packages/desktop/scripts/bundle.mjs:700-745` | build-desktop.sh 编排调用 | 本次新补 `cards/zcode/构建身份与打包.md` |
 | `~/.zcode` 用户数据布局 | `packages/services/src/paths.ts:45-58` | backup 脚本的范围依据 | 本次新补 `cards/zcode/数据目录与迁移.md` |
 
@@ -77,12 +78,12 @@ authority_refs:
 | 编号 | 需求 |
 |---|---|
 | FR-001 | `patch/backup-zcode-data.sh <备份目录>`：对 `~/.zcode` 下所有 SQLite 库用 `sqlite3 <db> ".backup <dst>"` 在线备份（含 WAL 状态），复制其余配置/数据文件（范围见 §4.1），生成 `manifest.json`（路径、字节数、sha256）与 `sha256sums.txt`；不修改源数据；可重复执行（目标已存在则中止并提示）；支持 `--dry-run`。 |
-| FR-002 | `patch/build-desktop.sh <ZCode源码目录>`：确保 Node 24.14.0（下载解压到 `/Users/weidwonder/projects/.toolchains/node-v24.14.0`，已存在直接用；不改全局）、pnpm 10.33.2 可用；`pnpm install`（幂等）；以 `ZCODE_ENV=production`、`ZCODE_AUTO_UPDATE=0`、按 `--identity preview|production`（默认 preview）设定身份变量；执行 `pnpm bundle:desktop`（mac arm64）；结束时打印产物路径（.app unpacked 目录与 .dmg/.zip）。支持 `--dry-run`（只打印将执行的命令不执行）与 `--skip-install`。 |
+| FR-002 | `patch/build-desktop.sh <ZCode源码目录>`：确保 Node 24.14.0（下载解压到 `/Users/weidwonder/projects/.toolchains/node-v24.14.0`，已存在直接用；不改全局）与 pnpm 10.33.2 可用（缺失或版本不符时自动安装到 `.toolchains/pnpm-10.33.2`，`--prefix` 隔离不动全局，失败才报错）；`pnpm install`（幂等）；以 `ZCODE_ENV=production`、`ZCODE_AUTO_UPDATE=0`、按 `--identity preview|production`（默认 preview）设定身份变量；执行 `pnpm bundle:desktop`（mac arm64）；结束时打印产物路径（.app unpacked 目录与 .dmg/.zip）。支持 `--dry-run`（只打印将执行的命令不执行）与 `--skip-install`。 |
 | FR-003 | `patch/install-desktop.sh <产物 .app 或 .dmg>`：从产物 Info.plist 读 CFBundleIdentifier/CFBundleName 决定安装目标（`dev.zcode.app` → `/Applications/ZCode.app`；`dev.zcode.app.preview` → `/Applications/ZCode Preview.app`）；检测目标 app 是否在运行（pgrep，检测手段不可用时警告并要求 `--yes` 确认）；把现有 app `mv` 到 `/Users/weidwonder/projects/zcode-backups/apps/<Name>-<版本>-<时间戳>.app`；`ditto` 拷入新包；`xattr -dr com.apple.quarantine`；默认 ad-hoc 重签（`--no-sign` 跳过）。支持 `--dry-run`。 |
 | FR-004 | `patch/rollback-desktop.sh`：列出 `/Users/weidwonder/projects/zcode-backups/apps/` 的可回滚快照；无参数恢复最近一份（或 `--from <快照路径>` 指定）；同样检测运行、mv 当前包到备份区（带 `rolledback-from-` 前缀）、mv 快照回 `/Applications`。支持 `--dry-run`。 |
-| FR-005 | `patch/sync-upstream.sh <ZCode源码目录>`：`git fetch origin`；从 `origin/main` 创建 `local/patched-<短SHA>` 分支（已存在则中止）；补丁来源：`patch/series`（一行一个提交 SHA，`#` 注释行忽略）非空用之，为空则取 `origin/main..feat/local-bot-webhook` 中非 `chore(local-dw):` 前缀的提交按序 cherry-pick；冲突即停（打印冲突文件清单，保留现场，退出码 4）；全部通过后跑 `pnpm typecheck` 与 `pnpm lint`（Node 24.14.0 PATH 前置）；结尾打印下一步（build-desktop.sh）。git 命令一律带 `-c safe.directory='*'`。支持 `--dry-run`（打印计划：新分支名、将 pick 的提交清单、将跑的校验命令，不执行写操作）。 |
+| FR-005 | `patch/sync-upstream.sh <ZCode源码目录>`：`git fetch origin`；从 `origin/main` 创建 `local/patched-<短SHA>` 分支（已存在则中止）；补丁提交**只以 `patch/series` 显式列出的净提交为准**（一行一个提交 SHA，`#` 注释行忽略，`! <命令>` 行是 pick 后的自定义校验；series 由派发者在补丁评审通过后固化——上游分支含 v1 引入+revert 对冲提交对，自动提取会把对冲对一起 pick，故不做自动取分支）；series 未固化时仅建分支并打警告，不 cherry-pick；冲突即停（打印冲突文件清单，保留现场，退出码 4）；全部通过后跑 `pnpm typecheck` 与 `pnpm lint`（Node 24.14.0 PATH 前置）；结尾打印下一步（build-desktop.sh）。git 命令一律带 `-c safe.directory='*'`。支持 `--dry-run`（打印计划：新分支名、将 pick 的提交清单、将跑的校验命令，不执行写操作）。 |
 | FR-006 | `patch/README.md`：首次替换、上游更新、回滚三条流程的完整命令序列；两份身份方案的取舍依据（指向调查报告）；已知风险（强更门、TCC 重授权、降级数据损耗、备份位置）。 |
-| FR-008 | `patch/verify-migration-checksums.mjs <ZCode源码目录> [--zcode-root=...]`：复算三组迁移账本 checksum 并与用户库比对（会话库 24 条、任务索引 4 条、项目存储 2 条精确复算；动态构造条目显式 SKIP-DYN），账本含清单外条目即非零退出——上游更新后替换安装前的降级门检。 |
+| FR-008 | `patch/verify-migration-checksums.mjs <ZCode源码目录> [--zcode-root=...]`：复算三组迁移账本 checksum 并与用户库比对（会话库 24 条中 21 条精确复算 + 3 条动态构造 SKIP-DYN；任务索引 4 条；项目存储 2 条），三组账本任一含清单外条目即非零退出（任务索引豁免另两个 scope 的固定 id）——上游更新后替换安装前的降级门检。 |
 | FR-007 | 调查报告 `docs/report/zcode-patched-build-compat.md`：覆盖任务书四大问（降级风险/登录凭据/强制升级门/推荐方案与回滚），结论全部附 `文件:行` 或实测输出作为证据；含「以 2026-10-27 库状态为准」的时效声明。 |
 
 ## 2. 数据模型 / 数据结构
@@ -96,7 +97,7 @@ authority_refs:
   zcode/cli/db/db.sqlite             # sqlite3 .backup 产物（不含 -wal/-shm）
   zcode/v2/tasks-index.sqlite
   zcode/v2/<其余文件按原相对路径>      # 复制（见 §4.1 范围表）
-  zcode/skills/... zcode/agents/...
+  zcode/skills/... zcode/cli/agents/...
 ```
 
 `manifest.json` 字段：
@@ -146,9 +147,9 @@ authority_refs:
 | `cli/db/db.sqlite` | sqlite3 在线备份 | 会话库（984 MB，WAL 活跃，文件复制会拿到撕裂快照） |
 | `v2/tasks-index.sqlite` | sqlite3 在线备份 | 任务索引库（WAL 活跃） |
 | `v2/*.json`、`v2/certs/`、`v2/agent-config/`、`v2/runtime/`、`v2/gen-ui-state/`、`v2/onboarding-record.json` | 递归复制 | 凭据/设置/bot 配置等全部结构化数据 |
-| `skills/`、`agents/` | 递归复制 | 用户安装的技能与 agent 定义（skills 65 项，体积小价值高） |
+| `skills/`、`cli/agents/` | 递归复制 | 用户安装的技能与 agent 定义（skills 65 项，体积小价值高） |
 | `cli/plugins/`、`cli/memories/`、`cli/log/` | 递归复制（非 minimal） | 用户插件与记忆；log 体积大但取证需要 |
-| `workspace/`、`cli/artifacts/`、`cli/exec/`、`cli/rollout/`、`v2/visualizations/`、`v2/cache/`、`v2/crash/`、`v2/logs/`、`feedback/` | 跳过 | 任务工作区与可再生产物，体积大（数 GB）；记入 manifest 的 skipped |
+| `workspace/`、`cli/artifacts/`、`cli/exec/`、`cli/rollout/`、`cli/image-cache/`、`cli/pdf-cache/`、`v2/visualizations/`、`v2/cache/`、`v2/crash/`、`v2/logs/`、`feedback/`、`backup/`、`plugin-workspace/` | 跳过 | 任务工作区与可再生产物、缓存与 ZCode 自身的迁移备份，体积大（数 GB）；全部记入 manifest 的 skipped |
 | `cli/db/db.sqlite-wal/-shm` | 跳过 | 在线备份产物自包含，复制 WAL 无意义 |
 
 `--minimal` 选项：只备两个 sqlite + `v2/*.json` + `v2/certs` + `v2/agent-config`（首次快速保全核心，适合装补丁前临时保底）。
@@ -157,20 +158,21 @@ authority_refs:
 
 1. 校验源码目录存在 `package.json` 且 `pnpm-workspace.yaml` 存在，否则退出 1。
 2. Node 工具链：`/Users/weidwonder/projects/.toolchains/node-v24.14.0/bin/node` 不存在 → 从 `https://registry.npmmirror.com/-/binary/node/v24.14.0/node-v24.14.0-darwin-arm64.tar.gz` 下载（官方 `https://nodejs.org/dist/…` 兜底，重试一次）解压；`PATH` 前置该 bin 目录。
-3. pnpm：`command -v pnpm` 且 `pnpm --version` 为 10.33.2（pnpm 脚本 shebang `#!/usr/bin/env node` 会随 PATH 取 Node 24）；缺失则报错（不自动安装全局包）。
+3. pnpm：PATH 中版本恰为 10.33.2 则直接用（shebang `#!/usr/bin/env node` 会随 PATH 取 Node 24）；缺失或版本不符时自动 `npm install --global --prefix .toolchains/pnpm-10.33.2 pnpm@10.33.2`（`--prefix` 装进工具链目录，不动全局），失败才报错。
 4. `pnpm install`（除非 `--skip-install`）。
 5. 身份变量（来源：`desktop-product-identity.mjs:59-68` 的解析规则）：
    - `--identity preview`（默认）：`ZCODE_ENV=production ZCODE_PREVIEW_IDENTITY=1`
-   - `--identity production`：`ZCODE_ENV=production`（MUST NOT 设 ZCODE_PREVIEW_IDENTITY）
+   - `--identity production`：`ZCODE_ENV=production ZCODE_PREVIEW_IDENTITY=0`（显式置 0 与不设等价——源码 isPreviewIdentityRequested 对 `""`/`"0"` 同判 false——并可防外部环境泄漏，与 `ZCODE_AUTO_UPDATE=0` 同理）
 6. 常量：`ZCODE_AUTO_UPDATE=0`（`scripts/build-time-config.mjs:44-47`：不设即关，显式置 0 防私有默认值干扰）、`ELECTRON_MIRROR` 未设时置 npmmirror（bundle.mjs 默认即此，显式置出于确定性）。
 7. `pnpm bundle:desktop -- --os mac --arch arm64`（bundle.mjs 内部完成 prepare:runtime-assets → build → electron-builder → 产物校验 → 体积审计）。
-8. 成功后定位并打印：`packages/desktop/dist/mac-arm64/ZCode[ Preview].app`（unpacked，可直接交给 install-desktop.sh）与 dist 下最新 `.dmg`。
+8. 成功后定位并打印：`packages/desktop/dist/mac-arm64/ZCode[ Preview].app`（unpacked，可直接交给 install-desktop.sh）与 dist 下最新 `.dmg`、`.zip`。
 
 ### 4.3 install-desktop.sh / rollback-desktop.sh
 
 - 产物形态判定：参数是 `.app` 目录（有 `Contents/Info.plist`）直接用；是 `.dmg` 则 `hdiutil attach -nobrowse -readonly` 挂载后取其中唯一 `.app`，`hdiutil detach`（拷贝用 ditto，跨卷保权限/元数据）。
 - 身份→目标：读 `CFBundleIdentifier`：`dev.zcode.app` → `/Applications/ZCode.app`；`dev.zcode.app.preview` → `/Applications/ZCode Preview.app`；其它 → 报错退出 1（不装不明身份的包）。
 - 运行检测：`pgrep -f "<目标路径>"`（pgrep 本身不可用时——如座位沙箱——打印警告，要求 `--yes` 显式确认已退出）。
+- 脚本设计为**由用户本人在本机终端直接运行**（自动化座位对 `/Applications` 不可写）：开场先打印「执行计划」编号步骤全貌（运行检测→旧包去向→ditto→xattr→codesign），再逐步执行；rollback 同风格。
 - 替换：`mv "<目标>" "<备份区>/<Name>-<旧版本>-<YYYYMMDD-HHMMSS>.app"`（同卷 mv 原子）→ `ditto "<新>" "<目标>"` → `xattr -dr com.apple.quarantine "<目标>"` → 默认 `codesign --force --deep --sign - "<目标>"`（`--no-sign` 跳过）。ad-hoc 签名的取舍依据见报告 §5。
 - rollback：`--list` 列备份区；恢复时同样检测运行、先把当前包 mv 到备份区（文件名前缀 `rolledback-from-`，保留现场供再回退），再把指定快照 mv 回 `/Applications`。
 
@@ -178,7 +180,7 @@ authority_refs:
 
 1. 在源码目录 `git -c safe.directory='*' fetch origin`。
 2. `local/patched-$(git rev-parse --short origin/main)` 已存在 → 报错退出 1（提示手工清理，不自动删分支）。
-3. 补丁提交序列：`patch/series` 非空（忽略空行与 `#` 注释）→ 按文件顺序；空 → `git log --reverse origin/main..feat/local-bot-webhook --format=%H` 过滤 `chore(local-dw):` 前缀（`git log --format='%H %s'` 后按前缀筛）。序列为空 → 打印提示（当前上游补丁分支尚无功能提交）并继续建分支（同步上游本身仍有意义）。
+3. 补丁提交序列：**只读 `patch/series`**（文件存在即读入：SHA 行按序进 picks，`!` 行进 custom_checks，`#`/空行忽略；文件不存在或无 SHA 行 → 打印「series 未固化（由派发者在补丁评审通过后填净提交）」警告，picks 为空仍继续建分支）。不做任何自动取分支提交（上游分支含对冲提交对，见 FR-005）。
 4. `git switch -c <分支> origin/main` → 逐个 `git cherry-pick <sha>`；任一失败 → `git status --short` + `git diff --name-only --diff-filter=U` 打印冲突清单，退出 4，**不做任何 reset/revert/清理**。
 5. 校验：`pnpm typecheck`、`pnpm lint`（PATH 前置 Node 24.14.0，与 build-desktop.sh 同一工具链逻辑）；失败退出 5。
 6. 打印下一步指引（build-desktop.sh）。
@@ -253,7 +255,7 @@ authority_refs:
 | AC-007 | 调查报告覆盖任务书四大问且结论有出处；推荐方案与脚本默认值一致 | FR-007 |
 | AC-008 | `patch/README.md` 三条流程可直接照抄执行 | FR-006 |
 | AC-009 | 权限受限环境实测：EACCES 路径的报错包含 `dwc grant` 提示 | FR-001~005 |
-| AC-010 | verify-migration-checksums.mjs 对当前用户库实跑：exit 0，21 条 OK、5 条 SKIP-DYN，与报告 §1.3 一致 | FR-008 |
+| AC-010 | verify-migration-checksums.mjs 对当前用户库实跑：exit 0，27 条 OK（会话库 21 + 任务索引 4 + 项目存储 2）、5 条 SKIP-DYN，与报告 §1.3 一致 | FR-008 |
 
 **覆盖自查**：FR-001→AC-002/003/004；FR-002→AC-002/003/005；FR-003→AC-002/003/006；FR-004→AC-002/003/006；FR-005→AC-002/003/005；FR-006→AC-008；FR-007→AC-007；FR-008→AC-010；（流程性）AC-001/009→—。
 
