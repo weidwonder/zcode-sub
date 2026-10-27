@@ -11,7 +11,7 @@ metadata:
 
 最小用法（各一行，详细语义跑 `zcode-sub --help`）：
 
-- 派发：`zcode-sub run "<任务全文>" --cwd <工作区绝对路径> [--name <名>]` —— stdout 一行 JSON（name/taskId）。任务全文一次写清（含要做什么、完成后输出最终总结）。**可并行派发**（每次 run 新建一个 ZCode 对话）；同时未结束的任务数有上限（默认 4，环境变量 `ZCODE_SUB_MAX_RUNNING` 可调），超限报 `zcode_too_many_running`——先 wait/stop 收尾再派。
+- 派发：`zcode-sub run "<任务全文>" --cwd <工作区绝对路径> [--name <名>]` —— stdout 一行 JSON（name/taskId）。任务全文一次写清（含要做什么、完成后输出最终总结）。**可并行派发**（每次 run 新建一个 ZCode 对话）；同时未结束的任务数有上限（默认 4，尽力检查——多进程同时派发瞬间可能超出；环境变量 `ZCODE_SUB_MAX_RUNNING` 可调），超限报 `zcode_too_many_running`——先 wait/stop 收尾再派。stdout 带 `warning: "first_prompt_failed"` = 任务已建但首条消息未送达，需 `zcode-sub send <name> "<原任务全文>"` 补发。
 - 等消息：`zcode-sub wait <name> [--timeout 秒]` —— 阻塞到有新事件（turn.started/assistant.message/turn.completed/turn.failed/input.queued/input.steered/permission.requested）或子代理主动消息就打印并退出（建议后台运行：退出即唤醒本轮）；超时输出 TIMEOUT（退出码 2），再等一次即可。过程事件正文超长会被截断、单次输出总量也有上限（略过提示总量与获取方式，游标不回退；全文用 result）。
 - 取结果：`zcode-sub result <name>` —— 最后回复全文 + 状态；还在跑会明确说（waiting_permission/waiting_input 提示去 ZCode GUI 处理——权限不经本工具批）。
 - 补充消息：`zcode-sub send <name> "<消息>" [--steer|--queue]` —— 运行中默认 auto（GUI 排队/引导语义）；任务空闲时即接续对话。
@@ -30,7 +30,7 @@ zcode-sub result audit-api
 
 机制与边界（使用前必须知道）：
 
-- **多任务并行**：name 是本地任务键（映射 ZCode 对话 taskId）；各任务事件互不干扰。任务在 ZCode GUI 实时可见，用户可能直接在 GUI 看或干预。并发上限见上文 run 条（尽力检查，多进程同时派发瞬间可能超出）。
+- **多任务并行**：name 是本地任务键（映射 ZCode 对话 taskId）；各任务事件互不干扰。任务在 ZCode GUI 实时可见，用户可能直接在 GUI 看或干预。并发上限见上文 run 条。
 - **send 的返回**：打印 sent/queued/steered（queued/steered 带 commandId）——运行中补充默认排队或引导，不是立即生效。
 - **wait 的事件粒度**：`[turn.completed] <最终文本>` 出现即该轮完成；停止后的完成事件文本可能为空（以 result 的状态为准）；`permission.requested` 只提示去 GUI；收到「事件缓冲溢出」（上游事件缓冲有界，溢出）改用 result 轮询。
 - **退出码归因**（完整闭集与事件类型以本仓库 spec §3 为准）：2 连不上 API **或 wait 超时**；3 工作区未打开；4 投递失败/任务被删 **或运行中 resume 被拒**；5 token/Host 校验失败；7 名字非法或重名；8 未结束任务达上限。名字仅允许 `[A-Za-z0-9._-]+`。

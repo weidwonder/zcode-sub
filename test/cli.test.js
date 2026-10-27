@@ -259,12 +259,21 @@ test("run：stdout 一行 JSON；fake 收到 title/workspace/prompt；本地登�
   assert.equal(getTask(home, "fix-1").workspacePath, "/tmp/demo");
 });
 
-test("run：重名 → exit 7（ZCode 侧已创建、本地登记拒绝）", async () => {
+test("run：重名 → exit 7（本地预查拦下，不触上游、不建孤儿对话）", async () => {
+  const callsBefore = fake.calls.length;
   const dup = await runCli(["run", "再来一个", "--cwd", "/tmp/demo", "--name", "fix-1"]);
   assert.equal(dup.status, 7);
   assert.match(dup.stderr, /zcode_name_taken/u);
-  assert.match(dup.stderr, /taskId=/u, "应提示 ZCode 侧已创建的 taskId");
-  assert.match(dup.stderr, /clientRequestId=zsub-/u, "stderr 提示应附 clientRequestId 便于对账");
+  assert.match(dup.stderr, /任务名 "fix-1" 已存在，换一个名字/u);
+
+  // 重名在触上游之前拦下：无任何新 API 调用，更没有新的 POST /api/tasks（不在
+  // ZCode 侧留下孤儿对话）；并发竞态仍由 registerTask 的 EEXIST 兜底。
+  const newCalls = fake.calls.slice(callsBefore);
+  assert.equal(newCalls.length, 0, `重名 run 不应产生任何新的 API 调用：${JSON.stringify(newCalls)}`);
+  assert.ok(
+    !newCalls.some((call) => call.method === "POST" && call.url.split("?")[0] === "/api/tasks"),
+    "重名 run 不应有新的 POST /api/tasks 请求",
+  );
   settle("fix-1");
 });
 
@@ -654,6 +663,32 @@ test("wait：reply 批超 20000 字符 → 略过提示 + 游标推进到尾", a
   assert.equal(again.status, 2);
   assert.equal(again.stdout, "TIMEOUT\n");
   settle("bulk-rp");
+});
+
+test("wait：单条 reply 超 20000 字符 → 降级输出前 2000 + 信箱路径，游标照常推进", async () => {
+  await dispatchTask("big-rp");
+  appendReplyLine(home, "big-rp", "B".repeat(30000));
+
+  const got = await runCli(["wait", "big-rp", "--timeout", "3"]);
+  assert.equal(got.status, 0, got.stderr);
+  assert.ok(got.stdout.includes(`[reply] ${"B".repeat(2000)}`), "应打印前 2000 字符");
+  assert.ok(!got.stdout.includes("B".repeat(2001)), "第 2001 字符起不应打印");
+  assert.ok(got.stdout.includes("…（共 30000 字符，全文见"), "降级提示应含总字符数");
+  assert.ok(got.stdout.includes(join(home, "mailboxes", "big-rp.jsonl")), "降级提示应含信箱文件绝对路径");
+  assert.ok(got.stdout.length < 25_000, `stdout 应小于 25000 字符，实际 ${got.stdout.length}`);
+  assert.equal(readCursor(home, "big-rp"), 1, "游标应照常推进");
+
+  // 游标已推进：再 wait 无新 reply → TIMEOUT（exit 2）
+  const again = await runCli(["wait", "big-rp", "--timeout", "2"]);
+  assert.equal(again.status, 2);
+  assert.equal(again.stdout, "TIMEOUT\n");
+
+  // 未超单条限（10000 < 20000）的 reply 仍全文输出
+  appendReplyLine(home, "big-rp", "C".repeat(10000));
+  const full = await runCli(["wait", "big-rp", "--timeout", "3"]);
+  assert.equal(full.status, 0, full.stderr);
+  assert.ok(full.stdout.includes(`[reply] ${"C".repeat(10000)}`), "未超单条限的 reply 应全文输出");
+  settle("big-rp");
 });
 
 test("wait：ZCode 重启事件缓冲清空 → 游标回退继续等新事件", async () => {

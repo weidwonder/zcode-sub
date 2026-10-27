@@ -14,27 +14,22 @@
 
 ### 变更
 
-- 并发派发上限：同时非终态任务数默认 4（`ZCODE_SUB_MAX_RUNNING` 调整），超限 `zcode_too_many_running`（退出码 8）。
-- 任务登记由单文件 tasks.json 改为每任务分片 `tasks/<name>.json`（`wx` 独占创建防同名竞态；并发丢登记修复）。
+- 并发派发上限：同时非终态任务数默认 4（`ZCODE_SUB_MAX_RUNNING` 调整，尽力检查——多进程同时派发瞬间可能超出），超限 `zcode_too_many_running`（退出码 8）；并发额度刷新遇 404（任务已在 GUI 删除）时本地置 `error` 终态自动释放额度。
+- 任务登记由单文件 tasks.json 改为每任务分片 `tasks/<name>.json`（`wx` 独占创建防同名竞态；并发丢登记修复；损坏分片重登记时备份 `.corrupt-<ts>` 后覆盖）。
 - 所有按 taskId 的 API 请求携带 workspacePath（ZCode 重启丢归属表时据此路由）；wait 处理事件序号回退。
-- wait 过程事件正文超 2000 字符截断（reply 行与 result 保持全文）。
-- setup `--api-port` 与已存在开关文件冲突时报错（以开关文件为准，不覆盖），退出码 1。
+- wait 输出体量双闸：单条事件正文超 2000 字符截断（评审一轮）、单次输出总量上限 20000 字符——超出后剩余事件/reply 降级为一行「剩余 N 条略过 + 获取方式」，游标照常推进不重放（评审二轮）；单条 reply 超 20000 字符同样降级为前 2000 字符 + 总长 + 信箱文件路径指针（评审三轮）。
+- setup `--api-port` 与已存在开关文件冲突时报错（以开关文件为准，不覆盖），退出码 1；状态目录不可写时最先探测并提示 `dwc grant <目录>`（此前会因建目录裸崩）。
 - `zcode-sub mcp` 的 serverInfo.version 与 Skill metadata.version 统一读 package.json。
+- 对齐上游偏离 #11~#14：create 部分失败（`201 {taskId, warning:"first_prompt_failed"}`）照常登记并以 JSON `warning` 字段 + stderr 补发提示告知（退出码 0，任务已建）；op 异常 `503 {error:"unavailable_host"}` 视为暂态（GET/带幂等键 createTask 重试一次，最终失败报 `zcode_api_unreachable`）；假端点补 mode 11 值枚举（非法 400）与 clientRequestId 1..200/10 分钟窗口口径；run 不暴露 `--mode`（缺省取 GUI 默认）。
+- `POST /api/tasks` 携带 `clientRequestId` 幂等键（run 生成 `zsub-<uuid>` 并记入本地分片与 stdout JSON；上游同键去重返回同一 taskId）：createTask 网络失败改为**同键安全重试一次**，撤回下条「POST 一律不重试」中对建任务的保守禁令；messages/stop 仍不重试。
+- （评审三轮）run 本地重名预查（exit 7 不触上游，不再产生 GUI 孤儿对话）；删除 setup 尾部不可达的重复可写性探测。
 
 ### 修复
 
-- POST 请求不再自动重试：创建/写入失败即报 `zcode_api_unreachable` 并提示「任务可能已创建，先用 list / GUI 核对」（防双建任务）；GET 保留一次重试。
+- POST 请求不再自动重试（除上条带幂等键的 createTask）：写入失败即报 `zcode_api_unreachable` 并提示「任务可能已创建，先用 list / GUI 核对」（防双建任务）；GET 保留一次重试。
 - `getEvents` 对 HTTP ≥400 统一抛 `zcode_send_failed`（此前 404 以 200 语义 payload 返回）。
 - 新增 `ZCODE_SUB_DEBUG=1` 请求/响应摘要日志（debug.log，不含 token 与 prompt 正文）。
-
-### 变更（评审二轮）
-
-- 对齐上游偏离 #11~#14：create 部分失败（`201 {taskId, warning:"first_prompt_failed"}`）照常登记并以 JSON `warning` 字段 + stderr 补发提示告知（退出码 0，任务已建）；op 异常 `503 {error:"unavailable_host"}` 视为暂态（GET/带幂等键 createTask 重试一次，最终失败报 `zcode_api_unreachable`）；假端点补 mode 11 值枚举（非法 400）与 clientRequestId 1..200/10 分钟窗口口径；run 不暴露 `--mode`（缺省取 GUI 默认）。
-- `POST /api/tasks` 携带 `clientRequestId` 幂等键（run 生成 `zsub-<uuid>` 并记入本地分片；上游同键去重返回同一 taskId）：createTask 网络失败改为**同键安全重试一次**，撤回上条「POST 一律不重试」中对建任务的保守禁令；messages/stop 仍不重试。
-- wait 单次输出总量上限 20000 字符：超出后剩余事件/reply 降级为一行「剩余 N 条略过 + 获取方式」，游标照常推进不重放（单条 2000 截断之外新增批级闸）。
-- 并发额度刷新遇 404（任务已在 GUI 删除）时本地置 `error` 终态自动释放额度；exit 8 提示同步。
-- setup 在状态目录不可写时最先探测并提示 `dwc grant <目录>`（此前会因建目录裸崩）。
-- 损坏任务分片在同名重登记时备份 `.corrupt-<ts>` 后覆盖（修复名字永久卡死）；删除无生产调用方的 `saveTasks` 导出与 `pathsOf().tasksFile` 死字段。
+- 真机冒烟脚本 run 断言的 JSON 空格修正（紧凑输出下原 grep 恒不匹配）。
 
 ### 内部
 

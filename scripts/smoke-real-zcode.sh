@@ -30,7 +30,7 @@ step "3. 派发任务 name=$NAME"
 RUN_OUT=$("$ZCODE_SUB" run "$TASK_TEXT" --cwd "$PWD" --name "$NAME" 2>&1) \
   || { echo "FAIL: run 命令失败，输出如下——按输出里的错误码排查（工作区没开先去 GUI 打开 $PWD）"; echo "$RUN_OUT"; exit 1; }
 echo "$RUN_OUT"
-echo "$RUN_OUT" | grep -q '"status": "dispatched"' \
+echo "$RUN_OUT" | grep -q '"status":"dispatched"' \
   || { echo "FAIL: run 输出没有 \"status\": \"dispatched\"——看上面完整输出与 $ZCODE_SUB list"; exit 1; }
 echo "$RUN_OUT" | grep -q '"taskId"' \
   || { echo "FAIL: run 输出没有 taskId——契约 v2 的 run 必须回带 taskId，检查 zcode-sub 版本是否已切本机任务 API"; exit 1; }

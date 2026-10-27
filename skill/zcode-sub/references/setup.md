@@ -5,9 +5,9 @@
 ## 1. 安装 CLI
 
 ```bash
-# 本机已有仓库时（当前部署位置）：
-cd /Users/weidwonder/projects/zcode-sub
-# 仓库来源不确定时：先向用户确认仓库地址（本地路径或 URL）再 clone——本工具不发布 npm
+# 已部署本机时：进入 zcode-sub 仓库目录（可由 `which zcode-sub` 反查软链得到，或直接问用户）
+cd <zcode-sub 仓库路径>
+# 仓库来源不确定时：向用户确认仓库地址（本地路径或 URL）后再获取——本工具不发布 npm
 npm link        # 或把仓库 bin/zcode-sub.js 加入 PATH，或直接用绝对路径调用 bin/zcode-sub.js
 zcode-sub --help   # 验证
 ```

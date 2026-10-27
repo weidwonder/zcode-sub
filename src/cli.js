@@ -313,6 +313,15 @@ async function cmdRun(home, flags) {
   const name = typeof flags.name === "string" && flags.name ? flags.name : autoName();
   assertValidName(name);
   const config = requireConfig(home);
+  // 忠实#2：本地重名预查——重名在触上游之前拦下，不先 createTask 才被 registerTask
+  // 拒绝（那会在 ZCode 侧留下孤儿对话）。消息口径与 registerTask 的 nameTakenError 一致；
+  // 预查到登记之间的并发竞态仍由 registerTask 的 EEXIST 兜底。
+  if (tasks.getTask(home, name)) {
+    const err = new Error(`zcode_name_taken: 任务名 "${name}" 已存在，换一个名字`);
+    err.code = "zcode_name_taken";
+    err.exitCode = 7;
+    throw err;
+  }
   await enforceRunningLimit(home, config);
 
   // 幂等键：网络失败自动重试时同键防双建；重名等场景可人工对账
@@ -474,14 +483,20 @@ async function cmdWait(home, flags) {
     const cursor = readCursor(home, name);
     if (lines.length > cursor) {
       const pending = lines.slice(cursor);
-      // 批级总量闸：累计超限即停止逐条打印（游标照常推进到全部行数，不丢数据）
+      // 批级总量闸：累计超限即停止逐条打印（游标照常推进到全部行数，不丢数据）。
+      // 单条超 WAIT_OUTPUT_LIMIT 的 reply 先降级（前 2000 字符 + 信箱路径提示）再计入
+      // 累计——否则一条超长 reply 自己就能冲爆总闸（R3-1，与事件单条截断同构）。
       let written = 0;
       let printed = 0;
       for (const line of pending) {
         if (written >= WAIT_OUTPUT_LIMIT) break;
-        const text = `[reply] ${line.text}\n`;
-        process.stdout.write(text);
-        written += text.length;
+        const text = typeof line.text === "string" ? line.text : String(line.text);
+        const output =
+          text.length > WAIT_OUTPUT_LIMIT
+            ? `[reply] ${text.slice(0, EVENT_TEXT_LIMIT)}\n…（共 ${text.length} 字符，全文见 ${mailboxPath(home, name)}）\n`
+            : `[reply] ${text}\n`;
+        process.stdout.write(output);
+        written += output.length;
         printed += 1;
       }
       if (printed < pending.length) {
@@ -548,7 +563,8 @@ async function cmdWait(home, flags) {
 }
 
 // 事件正文超过 2000 字符只打印前 2000 字符（全文用 result / ZCode GUI 查看）；
-// reply 信箱行不截断（子代理对父代理的直接消息保持全文）。
+// reply 信箱行保持全文，唯单条超 WAIT_OUTPUT_LIMIT（20000）时降级为前 2000 字符
+// + 信箱文件路径提示（见 cmdWait 的 reply 打印路径）。
 // 返回本次写入的字符数（含截断提示行），供调用方的批级总量闸（WAIT_OUTPUT_LIMIT）累计。
 const EVENT_TEXT_LIMIT = 2000;
 
