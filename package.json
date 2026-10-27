@@ -1,0 +1,16 @@
+{
+  "name": "zcode-sub",
+  "version": "0.1.0",
+  "description": "把 ZCode 桌面版 Webhook Bot 当作 Claude Code 子代理使用的桥接 CLI",
+  "type": "module",
+  "private": true,
+  "bin": {
+    "zcode-sub": "bin/zcode-sub.js"
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "test": "node --test test/*.test.js"
+  }
+}
