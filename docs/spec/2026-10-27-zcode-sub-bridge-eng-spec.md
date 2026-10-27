@@ -81,6 +81,13 @@ authority_refs:
 | FR-013 | Skill `skill/zcode-sub/SKILL.md` 按 v2 更新（并行、send 语义、permission 提示） |
 | FR-014 | README 按 v2 更新（安装、setup、命令、边界） |
 | FR-015 | 删除 v1 残留：`src/daemon.js`、`src/ensure.js`、`src/ingress.js`、v1 fake-zcode、bind/new/status/stop 文本命令逻辑、`bot-webhook-ingress.json` 读写、config 的 botId/secret/userId/daemonPort 字段 |
+| FR-016 | 并发派发上限（评审门第一轮拍板）：run 前对本地登记中非终态（dispatched/running/waiting_permission/waiting_input/未知值）任务逐个 GET 刷新后计数，达到上限拒绝派发；上限默认 4，环境变量 `ZCODE_SUB_MAX_RUNNING` 可调；新错误码 `zcode_too_many_running`（退出码 8） |
+| FR-017 | POST 请求不自动重试（防双建任务）：网络失败即报 `zcode_api_unreachable` 并提示「任务可能已创建，先 list / GUI 核对」；GET 保留一次重试 |
+| FR-018 | 任务登记并发安全：每任务一分片文件 `<home>/tasks/<name>.json`（registerTask 用 `wx` 独占创建防同名竞态）；单分片损坏时先备份 `.corrupt-<ts>` 再按不存在处理 |
+| FR-019 | 所有按 taskId 的 API 请求携带登记的 workspacePath（GET 走 query、POST 进 body）——ZCode 重启丢归属表时据此路由（契约对齐第 4 条）；wait 处理事件 seq 回退（ZCode 重启后缓冲清空、nextSeq 变小）：重置本地游标并继续等待，不当新事件 |
+| FR-020 | wait 过程事件正文截断：单条事件 text/error/summary 超 2000 字符只打印前段并注明总长（全文用 result/GUI）；reply 信箱行与 result 保持全文 |
+| FR-021 | setup `--api-port` 与已存在开关文件端口冲突时明确报错（以开关文件为准、告知手工修改方式），exit 1，其余步骤继续 |
+| FR-022 | `ZCODE_SUB_DEBUG=1` 时 API 请求/响应摘要追加 `<ZCODE_SUB_HOME>/debug.log`（method/path/status/长度，不含 token 与 prompt 正文） |
 
 ## 2. 数据模型 / 数据结构
 
@@ -123,12 +130,16 @@ v1 的 seq/dispatch/status/notice 行语义删除；daemon.json、daemon.log、c
 **外部集成契约（ZCode 本机任务 API）**：
 - REQUIRED 操作如上表；鉴权 `Authorization: Bearer <token>`（常量时间比较在 A 侧）；`Host` 头校验 403；body 仅 `application/json`、上限 16 MiB；请求超时：普通 10s，events 长轮询 waitMs+5s。
 - 归一化：status 五值透传不翻译；delivery 结果透传；事件按 type 分发打印。
-- 机器可读错误码（stderr+退出码统一）：`zcode_api_unreachable`（连不上，2）、`zcode_workspace_not_open`（409，3）、`zcode_send_failed`（messages/stop/resume 的 4xx/5xx 非 401/403/409，含 404，4）、`zcode_unauthorized`（401/403，5）、`zcode_name_invalid`（含重名，7）。v1 的 6（未绑定）随绑定流程删除。
+- 机器可读错误码（stderr+退出码统一，闭集）：`zcode_api_unreachable`（连不上 API 或 **wait 超时 TIMEOUT**，2）、`zcode_workspace_not_open`（409：未打开或远端工作区，3）、`zcode_send_failed`（messages/stop/result/events 等按 taskId 请求的 4xx/5xx 非 401/403/409，含 404 任务不存在，**及运行中 resume 被拒**，4）、`zcode_unauthorized`（401/403，5）、`zcode_name_invalid`（名字非法，7）/`zcode_name_taken`（重名，7）、`zcode_too_many_running`（非终态任务达上限，8）。仅内部使用不占退出码：`zcode_not_configured`、`zcode_task_not_found`（本地无此任务）、`zcode_create_failed`（建任务异常响应）、`zcode_health_mismatch`、`zcode_task_busy_for_resume`（归入 4）。
 - **本集成不做哪些写操作**：不批权限、不写 ZCode 数据文件（开关文件按契约第 1 条「由用户或桥接程序 setup 写入」，仅 setup 显式执行）。
-- **B 依赖的字段级契约（A 对齐清单；契约正文未点名处为 B 的实现假设，最终总结同步）**：
-  - `events[i].type` ∈ 上列 7 种；`assistant.message`/`turn.completed` 的文本字段假设为 **`text`**；`turn.failed` 假设 **`error`**；`permission.requested` 摘要假设 **`summary`**；`at` 为毫秒时间戳。
-  - `POST /api/tasks` 的 `title` 传 name（GUI 对话标题可见任务名）。
+- **B 依赖的字段级契约（与 A 实装对齐后的终值）**：
+  - `events[i]`：`seq`（每任务从 1 单调，缓冲 500，溢出 `{resync:true}`）、`at`（毫秒）、`type` ∈ turn.started / assistant.message / turn.completed / turn.failed / permission.requested / input.queued / input.steered；payload 字段 `turn.started{turnId}`、`assistant.message{text}`、`turn.completed{text}`（停止后 text 可为空）、`turn.failed{error}`、`permission.requested{summary}`、`input.queued|steered{commandId}`。
+  - `POST /api/tasks` 的 `title` 传 name；`turnCount` 为快照中 assistant 消息条数。
   - `GET /api/tasks/:id` 的 `lastAssistantText` 为最近一条完整助手回复（idle 时即最终回复）。
+  - 停止后上游发 `turn.completed`（text 空），无独立 stopped 状态/事件——result 以 status（idle）为准。
+  - **所有按 taskId 的端点接受可选 workspacePath**（GET `?workspacePath=`、POST body）——ZCode 重启丢归属表时据此路由并校验；B 一律携带。
+  - ZCode 重启后 events 缓冲清空、seq 从当前继续——可能小于 B 本地游标（回退），B 重置游标继续等待。
+  - 校验顺序：路径级 404/405（鉴权前）→ Host 403 → Bearer 401 → Content-Type 415 → 大小 413。
   - events 的 `nextSeq` 在无新事件时等于 after；`resync:true` 时不含 events。
 
 ## 4. 核心逻辑 / 流程
@@ -161,25 +172,27 @@ getEvents(config, taskId, after, waitMs) → {events, nextSeq} | {resync: true}
 
 ### 4.3 run / send / resume / stop / result / wait / list
 ```
-run: name 校验+查重 → createTask → tasks.json 登记（eventsSeq=0, lastStatus="dispatched"）
+run: name 校验+查重 → 并发上限检查（FR-016：本地非终态任务逐个 GET 刷新后计数，≥上限 exit 8）
+    → createTask → 分片登记（eventsSeq=0, lastStatus="dispatched"）
     prompt 模板：【zcode-sub 委托】任务名 <name>…工作目录 <cwd>…reply_to_parent 说明…最终总结要求 + 任务正文
-send: 映射查 taskId → sendMessage(text, flags.steer?"steer":flags.queue?"queue":"auto")
+send: 映射查 taskId → sendMessage(text, delivery, workspacePath)
     打印投递结果（sent/queued/steered + commandId）
-resume: getTask → status=="idle" 才 sendMessage(text,"auto")（打印 sent）；否则 exit 4 提示用 send
-stop: stopTask → 打印「已请求停止」
-result: getTask → 更新 lastStatus
+resume: getTask(taskId, workspacePath) → status=="idle" 才 sendMessage（打印 sent）；running/waiting_* → exit 4 提示用 send
+stop: stopTask(taskId, workspacePath) → 打印「已请求停止」
+result: getTask(taskId, workspacePath) → 更新 lastStatus
     running/waiting_* → 「还在跑」+ waiting_permission/waiting_input 附「请在 ZCode GUI 处理」
-    idle/error → 「状态：<status>」+ lastAssistantText 全文
+    idle/error → 「状态：<status>」+ lastAssistantText 全文；未知值 → 「状态未知（原文 …），按非终态处理」
 wait: deadline=now+timeout(默认600s)
   loop:
-    信箱新行（行号>cursor）→ 打印 [reply] text → cursor 推进 → exit 0
+    信箱新行（行号>cursor）→ 打印 [reply] text（不截断）→ cursor 推进 → exit 0
     eventsWait = clamp(min(30s, 剩余), 0, 30s)；剩余≤0 → TIMEOUT exit 2
-    getEvents(taskId, eventsSeq, eventsWait*1000)
-      resync → getTask → 打印「事件缓冲溢出，改查任务状态：<status>；完整过程见 ZCode GUI」→ exit 0
-      events 非空 → 逐条打印（格式见下）→ eventsSeq=nextSeq → exit 0
+    getEvents(taskId, eventsSeq, eventsWait*1000, workspacePath)（HTTP≥400 抛 zcode_send_failed）
+      resync → 打印「事件缓冲溢出，改用 result 轮询」→ exit 0
+      空且 nextSeq < after → 游标回退：eventsSeq=nextSeq、打印「事件序列已重置（ZCode 可能重启）」→ 继续 loop
+      events 非空 → 逐条打印（正文>2000 字符截断+注明总长）→ eventsSeq=nextSeq → exit 0
       空 → 继续 loop（回来先查信箱）
   打印格式：`[<type>] <text|error|summary>`；permission.requested 后附一行「⏳ 请在 ZCode GUI 处理该权限请求」
-list: tasks.json 表格/JSON
+list: 本地任务表（name/taskId 前 8 位/lastStatus/createdAt/workspacePath）
 ```
 
 ### 4.4 MCP（src/mcp.js 改造）
@@ -222,7 +235,9 @@ tools/call reply_to_parent → task 在 tasks.json？（不在 → isError 文�
   |---|---|---|---|---|
   | ZCODE_SUB_HOME | env | 否 | `~/.zcode-sub`（userInfo().homedir） | 否 |
   | ZCODE_DATA_BASE_DIR | env | 否 | userInfo().homedir | 否 |
-  | config.apiPort | int | 否 | 47821 | 重启 ZCode 无关；改后 setup 重写开关文件 |
+  | ZCODE_SUB_MAX_RUNNING | env | 否 | 4（非终态任务并发上限） | 每次 run 读取 |
+  | ZCODE_SUB_DEBUG | env | 否 | 关（=1 写 debug.log 摘要） | 即时 |
+  | config.apiPort | int | 否 | 47821；开关文件已存在时以它为准（`--api-port` 冲突即报错 exit 1，不覆盖用户侧文件——FR-021） | setup 时 |
   | config.token | string | setup 生成 | — | — |
 - **安全不变量**：
   ```
@@ -292,8 +307,9 @@ stateDiagram-v2
 | AC-010 | 冒烟脚本 v2 步骤断言清楚 | FR-012 |
 | AC-011 | Skill/README v2 更新且覆盖并行与 send 语义 | FR-013,014 |
 | AC-012 | v1 残留删净（§8.2 逐项：无引用、文件不存在） | FR-015 |
+| AC-013 | 并发上限（默认 4 与 env 覆盖）、POST 不重试、子进程并行登记不丢、wait 截断、游标回退、端口冲突、403/415/405/413、workspacePath 传递均有用例 | FR-016~FR-022 |
 
-覆盖自查：FR-001→AC-002/003/006；FR-002→AC-002/003；FR-003→AC-002/003/004；FR-004→AC-002/008；FR-005→AC-002/004/008；FR-006→AC-002/003；FR-007→AC-002/003；FR-008→AC-002；FR-009→AC-002；FR-010→AC-002/009；FR-011→AC-008；FR-012→AC-010；FR-013→AC-011；FR-014→AC-011；FR-015→AC-012。全覆盖。
+覆盖自查：FR-001→AC-002/003/006；FR-002→AC-002/003；FR-003→AC-002/003/004；FR-004→AC-002/008；FR-005→AC-002/004/008；FR-006→AC-002/003；FR-007→AC-002/003；FR-008→AC-002；FR-009→AC-002；FR-010→AC-002/009；FR-011→AC-008；FR-012→AC-010；FR-013→AC-011；FR-014→AC-011；FR-015→AC-012；FR-016~FR-022→AC-013。全覆盖。
 
 ## 12. 待澄清点
 无（契约 v2 文本为准；字段假设已集中在 §3 末清单）。
@@ -313,4 +329,9 @@ stateDiagram-v2
 | D-v2-06 | resume 空闲检查 | running/waiting_* 拒绝 | 「续聊」语义 = 开新一轮对话输入；运行中补充是 send 的职责，两命令不重叠 |
 | D-v2-07 | list 只用本地 | 不依赖可选端点 | YAGNI；A 未承诺实现 |
 | D-v2-08 | permission 只提示 | 不做 API 批权限 | 契约 v2 明确本版不做 |
+| D-v2-09（评审一轮） | 并发上限 4，env 可调 | 派发者拍板；run 前 GET 刷新非终态计数，超限 exit 8 | 无上限会把父代理上下文与 ZCode 资源同时打爆 |
+| D-v2-10（评审一轮） | POST 不重试 | 网络失败即报「可能已创建」防双建任务 | 建任务无幂等键，重试=重复副作用 |
+| D-v2-11（评审一轮） | 任务登记分片文件 + wx 独占创建 | 单文件读改写并发实测丢 25% | 分片天然消竞争，与信箱同构 |
+| D-v2-12（评审一轮） | setup 端口冲突报错不覆盖 | 开关文件是 ZCode 侧事实源 | 自动重写会让 GUI 配置静默漂移 |
+| D-v2-13（契约对齐） | 所有 :taskId 请求带 workspacePath；seq 回退重置游标 | A 实装：ZCode 重启丢归属表、事件缓冲清空 | 路由兜底由调用方提供归属 |
 | D-01~D-07（v1） | 见 git 历史 8645a46 版 spec | 已被 D-v2 系取代；D-04（终态以查询为准）、D-06/D-07（零依赖）精神延续 | v1 调查结论（会话语义、/status 文案、messageId 幂等）继续住在事实卡，供 v1 考古与 A 侧参考 |

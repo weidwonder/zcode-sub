@@ -1,8 +1,9 @@
 import assert from "node:assert/strict";
-import { existsSync, mkdtempSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { spawn } from "node:child_process";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { test } from "node:test";
 import { loadConfig, saveConfig, createInitialConfig, updateConfig } from "../src/config.js";
 import { loadTasks, saveTasks, registerTask, updateTask, getTask, listTaskNames } from "../src/tasks.js";
@@ -21,6 +22,50 @@ function srcPath(name) {
 function tickMs() {
   const start = Date.now();
   while (Date.now() === start) {}
+}
+
+// 子进程登记脚本：home/name/taskId 走环境变量传，避开 -e 的 argv 位次差异。
+// 退出码：成功 0；失败透传 err.exitCode（zcode_name_taken → 7），错误码写 stderr。
+const registerChildScript = `
+import { pathToFileURL } from "node:url";
+const { registerTask } = await import(pathToFileURL(process.env.TASKS_SRC).href);
+try {
+  registerTask(process.env.HOME_DIR, process.env.TASK_NAME, {
+    taskId: process.env.TASK_ID,
+    workspacePath: "/tmp/ws",
+  });
+  process.exit(0);
+} catch (err) {
+  process.stderr.write(String(err.code ?? err.message) + "\\n");
+  process.exit(err.exitCode ?? 1);
+}
+`;
+
+function spawnRegisterChild(home, name, taskId) {
+  const child = spawn(
+    process.execPath,
+    ["--input-type=module", "-e", registerChildScript],
+    {
+      env: {
+        ...process.env,
+        TASKS_SRC: srcPath("tasks.js"),
+        HOME_DIR: home,
+        TASK_NAME: name,
+        TASK_ID: taskId,
+      },
+      stdio: ["ignore", "ignore", "pipe"],
+    },
+  );
+  const stderrChunks = [];
+  child.stderr.on("data", (chunk) => stderrChunks.push(chunk));
+  const exit = new Promise((resolve) => {
+    child.on("exit", (code) => resolve({ code, stderr: stderrChunks.join("") }));
+  });
+  return { exit };
+}
+
+function shardPath(home, name) {
+  return join(home, "tasks", `${name}.json`);
 }
 
 test("配置：缺文件返回 null；保存后 0600 读回 {apiPort, token}", () => {
@@ -98,8 +143,8 @@ test("任务更新：只动给定字段；不存在的 name 返回 null 不抛",
     const task = getTask(home, "t1");
     assert.equal(task.lastStatus, "running");
     assert.equal(task.eventsSeq, 5);
-    // 损坏任务表按空表起步
-    writeFileSync(join(home, "tasks.json"), "{broken", "utf8");
+    // 损坏分片聚合时跳过，按空表起步
+    writeFileSync(shardPath(home, "t1"), "{broken", "utf8");
     assert.deepEqual(loadTasks(home), { tasks: {} });
   } finally {
     rmSync(home, { recursive: true, force: true });
@@ -118,7 +163,8 @@ test("listTaskNames 按创建时间升序", () => {
       },
     });
     assert.deepEqual(listTaskNames(home), ["first", "mid", "late"]);
-    assert.deepEqual(Object.keys(loadTasks(home).tasks), ["late", "first", "mid"]);
+    // 分片聚合顺序不保证（目录序），只断言集合
+    assert.deepEqual(Object.keys(loadTasks(home).tasks).sort(), ["first", "late", "mid"]);
   } finally {
     rmSync(home, { recursive: true, force: true });
   }
@@ -155,6 +201,92 @@ test("信箱：reply 追加两行、kind 均 reply、ts 递增；游标默认 0�
     assert.throws(() => readMailboxLines(home, "a/b"), (err) => err.code === "zcode_name_invalid");
     assert.throws(() => writeCursor(home, "../escape", 1), (err) => err.code === "zcode_name_invalid");
     assert.throws(() => assertValidName("空 格"), /zcode_name_invalid/);
+  } finally {
+    rmSync(home, { recursive: true, force: true });
+  }
+});
+
+test("子进程真并行登记 8 个不同名：全部落盘、taskId 各归各", async () => {
+  const home = tempHome();
+  try {
+    const children = [];
+    for (let i = 0; i < 8; i++) {
+      children.push(spawnRegisterChild(home, `t-${i}`, `task-${i}`));
+    }
+    const results = await Promise.all(children.map((child) => child.exit));
+    const stderrTexts = JSON.stringify(results.map((result) => result.stderr));
+    assert.deepEqual(
+      results.map((result) => result.code),
+      Array(8).fill(0),
+      `子进程应全部登记成功：${stderrTexts}`,
+    );
+    const store = loadTasks(home);
+    assert.equal(Object.keys(store.tasks).length, 8);
+    for (let i = 0; i < 8; i++) {
+      assert.equal(store.tasks[`t-${i}`].taskId, `task-${i}`);
+      assert.equal(store.tasks[`t-${i}`].workspacePath, "/tmp/ws");
+    }
+  } finally {
+    rmSync(home, { recursive: true, force: true });
+  }
+});
+
+test("子进程同名竞态：恰好一个成功一个 zcode_name_taken，落盘是二者之一", async () => {
+  const home = tempHome();
+  try {
+    const children = [spawnRegisterChild(home, "race", "task-A"), spawnRegisterChild(home, "race", "task-B")];
+    const results = await Promise.all(children.map((child) => child.exit));
+    assert.deepEqual(
+      results.map((result) => result.code).sort((a, b) => a - b),
+      [0, 7],
+      `应恰好一胜一负：${JSON.stringify(results)}`,
+    );
+    const loser = results.find((result) => result.code === 7);
+    assert.match(loser.stderr, /zcode_name_taken/);
+    // 胜者落盘且内容稳定：taskId 是二者之一，分片与读回一致
+    const record = getTask(home, "race");
+    assert.ok(record, "胜者应已落盘");
+    assert.ok(["task-A", "task-B"].includes(record.taskId), `taskId 应是二者之一：${record.taskId}`);
+    const raw = JSON.parse(readFileSync(shardPath(home, "race"), "utf8"));
+    assert.equal(raw.taskId, record.taskId);
+  } finally {
+    rmSync(home, { recursive: true, force: true });
+  }
+});
+
+test("坏分片：updateTask 备份后按不存在；只读路径不备份；registerTask 可重新登记", () => {
+  const home = tempHome();
+  try {
+    const dir = join(home, "tasks");
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(shardPath(home, "bad"), "{broken", "utf8");
+
+    assert.deepEqual(loadTasks(home), { tasks: {} });
+    assert.equal(getTask(home, "bad"), null);
+    // 只读路径（loadTasks/getTask）不产生备份
+    assert.deepEqual(readdirSync(dir).filter((f) => f.startsWith("bad.json.corrupt-")), []);
+
+    assert.equal(updateTask(home, "bad", { lastStatus: "running" }), null);
+    const backups = readdirSync(dir).filter((f) => f.startsWith("bad.json.corrupt-"));
+    assert.equal(backups.length, 1, `应出现恰一份备份：${readdirSync(dir)}`);
+    assert.equal(readFileSync(join(dir, backups[0]), "utf8"), "{broken", "备份应保住原内容");
+
+    // 坏文件按不存在：同名可重新登记
+    registerTask(home, "bad", { taskId: "task-new", workspacePath: "/tmp/ws" });
+    assert.equal(getTask(home, "bad").taskId, "task-new");
+  } finally {
+    rmSync(home, { recursive: true, force: true });
+  }
+});
+
+test("分片不存在：读路径全为空表现且不建 tasks 目录", () => {
+  const home = tempHome();
+  try {
+    assert.deepEqual(loadTasks(home), { tasks: {} });
+    assert.deepEqual(listTaskNames(home), []);
+    assert.equal(getTask(home, "t1"), null);
+    assert.equal(updateTask(home, "t1", { lastStatus: "running" }), null);
+    assert.equal(existsSync(join(home, "tasks")), false);
   } finally {
     rmSync(home, { recursive: true, force: true });
   }

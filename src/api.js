@@ -3,6 +3,10 @@
 // 错误码与退出码统一：zcode_api_unreachable(2) / zcode_workspace_not_open(3) /
 // zcode_send_failed(4) / zcode_unauthorized(5)。
 
+import { appendFileSync } from "node:fs";
+import { join } from "node:path";
+import { getHome } from "./home.js";
+
 export class ApiError extends Error {
   constructor(code, message, { exitCode, status } = {}) {
     super(message);
@@ -12,12 +16,27 @@ export class ApiError extends Error {
   }
 }
 
+// ZCODE_SUB_DEBUG=1 时逐请求记一行摘要到 <getHome()>/debug.log。
+// 只记方法/路径/状态/响应长度，不写请求 body（prompt 内容）与 token；
+// 追加失败静默——调试日志绝不影响主流程。
+const debugLog = (line) => {
+  try {
+    appendFileSync(join(getHome(), "debug.log"), `${line}\n`);
+  } catch {
+    // 调试日志写不进去（目录不存在/只读等）就放弃，不影响主流程。
+  }
+};
+
 export async function apiFetch(config, path, { method = "GET", body, timeoutMs = 10_000 } = {}) {
   const url = `http://127.0.0.1:${config.apiPort}${path}`;
   const bodyText = body === undefined ? undefined : JSON.stringify(body);
+  const debug = process.env.ZCODE_SUB_DEBUG === "1";
+  // 网络类失败：GET 重试 1 次（同样的 path/body）；POST 不重试——创建/写入类请求
+  // 失败时目标可能已执行（如任务可能已创建），自动重试会双建任务，直接进失败分支。
+  // HTTP 4xx/5xx 两类方法都不重试。
+  const maxAttempts = method === "POST" ? 1 : 2;
   let lastError = null;
-  // 网络类失败重试一次（同样的 path/body）；HTTP 4xx/5xx 不重试。
-  for (let attempt = 0; attempt < 2; attempt += 1) {
+  for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
     try {
       const response = await fetch(url, {
         method,
@@ -28,7 +47,16 @@ export async function apiFetch(config, path, { method = "GET", body, timeoutMs =
         body: bodyText,
         signal: AbortSignal.timeout(timeoutMs),
       });
-      const payload = await response.json().catch(() => ({}));
+      const responseText = await response.text();
+      let payload = {};
+      try {
+        payload = JSON.parse(responseText);
+      } catch {
+        payload = {}; // 非 JSON 响应按空对象交给调用方按 status 判断
+      }
+      if (debug) {
+        debugLog(`${new Date().toISOString()} ${method} ${path} → ${response.status} ${responseText.length}字符`);
+      }
       if (response.status === 401 || response.status === 403) {
         throw new ApiError(
           "zcode_unauthorized",
@@ -40,11 +68,18 @@ export async function apiFetch(config, path, { method = "GET", body, timeoutMs =
     } catch (error) {
       if (error instanceof ApiError) throw error;
       lastError = error;
+      if (debug) {
+        debugLog(`${new Date().toISOString()} ${method} ${path} → ERR ${error.message}`);
+      }
     }
   }
+  const postHint =
+    method === "POST"
+      ? "\n⚠ 本次为创建/写入类请求，失败时目标可能已执行（如任务可能已创建）——先用 zcode-sub list / ZCode GUI 核对，不要盲目重试。"
+      : "";
   throw new ApiError(
     "zcode_api_unreachable",
-    `zcode_api_unreachable: 连不上 ZCode 本机任务 API 127.0.0.1:${config.apiPort}（${lastError?.message ?? "unknown"}）。检查 ZCode 是否运行、local-task-api.json 是否 enabled、端口。`,
+    `zcode_api_unreachable: 连不上 ZCode 本机任务 API 127.0.0.1:${config.apiPort}（${lastError?.message ?? "unknown"}）。检查 ZCode 是否运行、local-task-api.json 是否 enabled、端口。${postHint}`,
     { exitCode: 2 },
   );
 }
@@ -86,10 +121,11 @@ export async function createTask(config, { workspacePath, prompt, title }) {
   );
 }
 
-export async function sendMessage(config, taskId, text, delivery = "auto") {
+export async function sendMessage(config, taskId, text, delivery = "auto", workspacePath) {
   const { status, payload } = await apiFetch(config, `/api/tasks/${encodeURIComponent(taskId)}/messages`, {
     method: "POST",
-    body: { text, delivery },
+    // workspacePath 可选：带上后 A 侧 ZCode 重启丢归属表也能按工作区路由
+    body: { text, delivery, ...(workspacePath ? { workspacePath } : {}) },
   });
   if (status >= 200 && status < 300) return payload;
   throw new ApiError(
@@ -101,9 +137,11 @@ export async function sendMessage(config, taskId, text, delivery = "auto") {
   );
 }
 
-export async function stopTask(config, taskId) {
+export async function stopTask(config, taskId, workspacePath) {
   const { status, payload } = await apiFetch(config, `/api/tasks/${encodeURIComponent(taskId)}/stop`, {
     method: "POST",
+    // 有 workspacePath 才带 body；无则不带（向后兼容旧 A 侧）
+    ...(workspacePath ? { body: { workspacePath } } : {}),
   });
   if (status >= 200 && status < 300) return payload;
   throw new ApiError(
@@ -115,8 +153,9 @@ export async function stopTask(config, taskId) {
   );
 }
 
-export async function getTask(config, taskId) {
-  const { status, payload } = await apiFetch(config, `/api/tasks/${encodeURIComponent(taskId)}`);
+export async function getTask(config, taskId, workspacePath) {
+  const wsQuery = workspacePath ? `?workspacePath=${encodeURIComponent(workspacePath)}` : "";
+  const { status, payload } = await apiFetch(config, `/api/tasks/${encodeURIComponent(taskId)}${wsQuery}`);
   if (status >= 200 && status < 300) return payload;
   throw new ApiError(
     "zcode_send_failed",
@@ -127,14 +166,23 @@ export async function getTask(config, taskId) {
   );
 }
 
-export async function getEvents(config, taskId, after, waitMs) {
+export async function getEvents(config, taskId, after, waitMs, workspacePath) {
   const query = `after=${encodeURIComponent(String(after))}&waitMs=${encodeURIComponent(String(waitMs))}`;
-  const { payload } = await apiFetch(
+  const wsQuery = workspacePath ? `&workspacePath=${encodeURIComponent(workspacePath)}` : "";
+  const { status, payload } = await apiFetch(
     config,
-    `/api/tasks/${encodeURIComponent(taskId)}/events?${query}`,
+    `/api/tasks/${encodeURIComponent(taskId)}/events?${query}${wsQuery}`,
     // 长轮询挂 waitMs 毫秒，超时预算留出余量
     { timeoutMs: waitMs + 5000 },
   );
+  // 任务不存在表现为 HTTP 404，此处统一抛错；wait 不再自己判 payload.error
+  if (status >= 400) {
+    throw new ApiError(
+      "zcode_send_failed",
+      `zcode_send_failed: 事件查询失败（status=${status}${payload?.error ? " " + payload.error : ""}）。任务可能已在 GUI 删除。`,
+      { exitCode: 4, status },
+    );
+  }
   // 不做语义判断：{events,nextSeq} 或 {resync:true} 原样交给调用方
   return payload;
 }

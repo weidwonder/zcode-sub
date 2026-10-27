@@ -1,14 +1,14 @@
 ---
-lifecycle: active
-superseded_by: ''
-archived: ''
-last_confirmed: 2026-10-27
+lifecycle: superseded
+superseded_by: ../spec/2026-10-27-zcode-sub-bridge-eng-spec.md
+archived: 2026-10-28
+last_confirmed: 2026-10-28
 authority_refs:
-  - 'src/ingress.js 的 postIngress/queryStatus/parseStatusState'
-  - 'src/mailbox.js 的 appendMailbox/readMailbox/readCursor/writeCursor'
-  - 'daemon HTTP 面（POST /zcode/outbound、POST /internal/reply、GET /internal/health）'
-  - 'MCP 工具 reply_to_parent(task, message)'
+  - '本 plan 的 v1 任务分解（已被 v2 方案整体取代）'
+  - '现行接口契约以 spec §3 为准'
 ---
+
+> **归档头注（2026-10-28）**：本 plan 的 Task 1–7 按 v1（webhook bot）方案编写执行；2026-10-27 传输层切契约 v2 后，v1 任务分解不再描述现行系统（interface 与文件均已变），**现行权威以 spec（superseded_by 指向）为准**。文末〈v2 变更执行记录〉保留两轮实际执行的过程事实，仅作过程档案。
 
 # zcode-sub 桥接程序 Coding Plan
 

@@ -1,4 +1,8 @@
 import assert from "node:assert/strict";
+import { createServer, request as httpRequest } from "node:http";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { after, before, test } from "node:test";
 import { startFakeZcode } from "./helpers/fake-zcode.js";
 import { createTask, getEvents, getTask, probeHealth, sendMessage, stopTask } from "../src/api.js";
@@ -15,6 +19,28 @@ before(async () => {
 });
 
 after(() => fake.stop());
+
+// 绕过 src/api.js 直打 fake 的裸请求：用于校验 403/401/415/405/404 的状态码与错误体
+// （fetch 覆盖不了 Host 头；extra 透传给 http.request，如 setHost:false）
+function rawRequest(port, { method = "GET", path = "/", headers = {}, body, ...extra } = {}) {
+  return new Promise((resolve, reject) => {
+    const req = httpRequest({ host: "127.0.0.1", port, method, path, headers, ...extra }, (res) => {
+      let text = "";
+      res.on("data", (chunk) => (text += chunk));
+      res.on("end", () => {
+        let parsed = null;
+        try {
+          parsed = JSON.parse(text);
+        } catch {
+          parsed = null;
+        }
+        resolve({ status: res.statusCode, body: parsed });
+      });
+    });
+    req.on("error", reject);
+    req.end(body);
+  });
+}
 
 test("probeHealth：api/version 校验通过，health 不记入 calls", async () => {
   const mark = fake.calls.length;
@@ -38,9 +64,14 @@ test("createTask：201 返回 taskId，鉴权头与 Host 正确", async () => {
   assert.deepEqual(fake.createdTasks[taskId], { workspacePath: "/w1", title: "任务一", status: "idle" });
 });
 
-test("createTask：workspace 未打开 → zcode_workspace_not_open（exit 3）", async () => {
+test("createTask：workspace 未打开 → zcode_workspace_not_open（exit 3），远端工作区同码", async () => {
   await assert.rejects(
     () => createTask(config, { workspacePath: "/workspace-closed", prompt: "做点事" }),
+    (error) =>
+      error.code === "zcode_workspace_not_open" && error.exitCode === 3 && error.status === 409,
+  );
+  await assert.rejects(
+    () => createTask(config, { workspacePath: "/workspace-remote", prompt: "做点事" }),
     (error) =>
       error.code === "zcode_workspace_not_open" && error.exitCode === 3 && error.status === 409,
   );
@@ -69,7 +100,7 @@ test("sendMessage：空闲任务 sent；运行中任务 auto→queued、steer→
   assert.equal(page.nextSeq, 3);
 });
 
-test("sendMessage/stopTask/getTask：任务不存在 → zcode_send_failed（exit 4）", async () => {
+test("sendMessage/stopTask/getTask/getEvents：任务不存在 → zcode_send_failed（exit 4）", async () => {
   const missing = "00000000-0000-4000-8000-000000000000";
   await assert.rejects(
     () => sendMessage(config, missing, "你好"),
@@ -82,6 +113,15 @@ test("sendMessage/stopTask/getTask：任务不存在 → zcode_send_failed（exi
   await assert.rejects(
     () => getTask(config, missing),
     (error) => error.code === "zcode_send_failed" && error.exitCode === 4 && error.status === 404,
+  );
+  // getEvents 新语义：HTTP 404 统一抛错（旧版把 payload 原样返回）
+  await assert.rejects(
+    () => getEvents(config, missing, 0, 0),
+    (error) =>
+      error.code === "zcode_send_failed" &&
+      error.exitCode === 4 &&
+      error.status === 404 &&
+      error.message.includes("任务可能已在 GUI 删除"),
   );
 });
 
@@ -139,4 +179,259 @@ test("getEvents：立即取、超时空返、挂起唤醒、resync", async () =>
   fake.simulateResync(taskId);
   page = await getEvents(config, taskId, 2, 0);
   assert.deepEqual(page, { resync: true });
+});
+
+test("POST 网络失败不重试（计数=1）且带防双建提示；GET 重试 1 次共两次", async () => {
+  const hits = { post: 0, get: 0 };
+  // 回环 server：对目标请求一律 res.destroy() 模拟网络中断，按路径计数
+  const server = createServer((request, response) => {
+    const pathname = request.url.split("?")[0];
+    if (request.method === "POST" && pathname === "/api/tasks") {
+      hits.post += 1;
+      response.destroy();
+      return;
+    }
+    if (request.method === "GET" && /^\/api\/tasks\/[^/]+$/u.test(pathname)) {
+      hits.get += 1;
+      response.destroy();
+      return;
+    }
+    response.destroy();
+  });
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const cfg = { apiPort: server.address().port, token: "t" };
+  try {
+    await assert.rejects(
+      () => createTask(cfg, { workspacePath: "/w", prompt: "p" }),
+      (error) => {
+        assert.equal(error.code, "zcode_api_unreachable");
+        assert.equal(error.exitCode, 2);
+        assert.ok(error.message.includes("不要盲目重试"), `POST 失败消息应带防双建提示：${error.message}`);
+        return true;
+      },
+    );
+    assert.equal(hits.post, 1, "POST 失败后不得重试（防双建任务）");
+
+    await assert.rejects(
+      () => getTask(cfg, "task-x"),
+      (error) => {
+        assert.equal(error.code, "zcode_api_unreachable");
+        assert.ok(!error.message.includes("不要盲目重试"), "GET 失败消息不带防双建提示");
+        return true;
+      },
+    );
+    assert.equal(hits.get, 2, "GET 失败后应重试一次，共两次");
+  } finally {
+    server.closeAllConnections?.();
+    await new Promise((resolve) => server.close(() => resolve()));
+  }
+});
+
+test("Host 头不对 → 403 bad_host（鉴权与 Content-Type 之前）", async () => {
+  const res = await rawRequest(fake.port, {
+    method: "POST",
+    path: "/api/tasks",
+    headers: {
+      host: "evil.example",
+      authorization: "Bearer test-token",
+      "content-type": "text/plain",
+    },
+    setHost: false,
+    body: "{}",
+  });
+  assert.equal(res.status, 403);
+  assert.equal(res.body.error, "bad_host");
+});
+
+test("无 token → 401（Host 之后、Content-Type 之前）", async () => {
+  const res = await rawRequest(fake.port, {
+    method: "POST",
+    path: "/api/tasks",
+    headers: { "content-type": "text/plain" },
+    body: "{}",
+  });
+  assert.equal(res.status, 401);
+  assert.equal(res.body.error, "unauthorized");
+});
+
+test("POST content-type 非 application/json → 415", async () => {
+  const res = await rawRequest(fake.port, {
+    method: "POST",
+    path: "/api/tasks",
+    headers: { authorization: "Bearer test-token", "content-type": "text/plain" },
+    body: "hello",
+  });
+  assert.equal(res.status, 415);
+  assert.equal(res.body.error, "unsupported_media_type");
+});
+
+test("认识路径但方法不对（GET /api/tasks，无 token）→ 405 在鉴权前", async () => {
+  const res = await rawRequest(fake.port, { method: "GET", path: "/api/tasks" });
+  assert.equal(res.status, 405);
+  assert.equal(res.body.error, "method_not_allowed");
+});
+
+test("完全不认识的路径（GET /nowhere，无 token）→ 404 在鉴权前", async () => {
+  const res = await rawRequest(fake.port, { method: "GET", path: "/nowhere" });
+  assert.equal(res.status, 404);
+  assert.equal(res.body.error, "not_found");
+});
+
+test("body 超 16MiB → 413；客户端侧映射 zcode_create_failed", async () => {
+  const padding = "x".repeat(16 * 1024 * 1024);
+  const bodyText = JSON.stringify({ workspacePath: "/w-big", prompt: padding });
+  assert.ok(bodyText.length > 16 * 1024 * 1024, "body 应为 16MiB+1 字节以上");
+
+  const res = await rawRequest(fake.port, {
+    method: "POST",
+    path: "/api/tasks",
+    headers: {
+      authorization: "Bearer test-token",
+      "content-type": "application/json",
+      "content-length": Buffer.byteLength(bodyText),
+    },
+    body: bodyText,
+  });
+  assert.equal(res.status, 413);
+  assert.equal(res.body.error, "payload_too_large");
+
+  await assert.rejects(
+    () => createTask(config, { workspacePath: "/w-big", prompt: padding }),
+    (error) => error.code === "zcode_create_failed" && error.status === 413,
+  );
+});
+
+test("workspacePath 透传：sendMessage/getTask/getEvents/stopTask 各自带上，未带则不含", async () => {
+  const { taskId } = await createTask(config, { workspacePath: "/w6", prompt: "p" });
+  const queryOf = (record) => new URLSearchParams(record.url.split("?")[1] ?? "");
+
+  await sendMessage(config, taskId, "带ws的话", "auto", "/w6");
+  let record = fake.calls.at(-1);
+  assert.equal(record.body.workspacePath, "/w6");
+
+  await sendMessage(config, taskId, "不带ws的话");
+  record = fake.calls.at(-1);
+  assert.equal("workspacePath" in record.body, false, "未传 workspacePath 时 body 不得含该键");
+
+  await getTask(config, taskId, "/w6");
+  record = fake.calls.at(-1);
+  assert.equal(queryOf(record).get("workspacePath"), "/w6");
+
+  await getEvents(config, taskId, 0, 0, "/w6");
+  record = fake.calls.at(-1);
+  assert.equal(queryOf(record).get("workspacePath"), "/w6");
+
+  await stopTask(config, taskId, "/w6");
+  record = fake.calls.at(-1);
+  assert.equal(record.body.workspacePath, "/w6");
+});
+
+test("forgetOwnership：丢表后不带 ws 无法路由，带对的 ws 重绑成功，带错的 task_mismatch", async () => {
+  const { taskId } = await createTask(config, { workspacePath: "/w7", prompt: "p" });
+  fake.forgetOwnership();
+
+  // 不带 workspacePath → A 侧无从路由 → 404 task_not_found → zcode_send_failed
+  await assert.rejects(
+    () => getTask(config, taskId),
+    (error) => error.code === "zcode_send_failed" && error.exitCode === 4 && error.status === 404,
+  );
+
+  // 带正确 workspacePath → 按任务自身归属重绑 → 正常返回
+  const detail = await getTask(config, taskId, "/w7");
+  assert.equal(detail.taskId, taskId);
+  assert.equal(detail.workspacePath, "/w7");
+
+  // 带错误 workspacePath → 404 task_mismatch
+  await assert.rejects(
+    () => getTask(config, taskId, "/other-workspace"),
+    (error) => error.code === "zcode_send_failed" && error.status === 404,
+  );
+  const raw = await rawRequest(fake.port, {
+    path: `/api/tasks/${taskId}?workspacePath=${encodeURIComponent("/other-workspace")}`,
+    headers: { authorization: "Bearer test-token" },
+  });
+  assert.equal(raw.status, 404);
+  assert.equal(raw.body.error, "task_mismatch");
+});
+
+test("事件字段：turn.started 带 turnId（每任务自增），input.queued/input.steered 带 commandId", async () => {
+  const { taskId } = await createTask(config, { workspacePath: "/w8", prompt: "p" });
+
+  await sendMessage(config, taskId, "第一句"); // 空闲 → turn.started
+  fake.createTaskAlreadyRunning(taskId);
+  await sendMessage(config, taskId, "排队的话", "auto"); // input.queued
+  await sendMessage(config, taskId, "插队的话", "steer"); // input.steered
+
+  const page = await getEvents(config, taskId, 0, 0);
+  const [started, queued, steered] = page.events;
+  assert.equal(started.type, "turn.started");
+  assert.match(started.turnId, /^turn-\d+$/u);
+  assert.equal(started.turnId, "turn-1");
+  assert.equal(queued.type, "input.queued");
+  assert.match(queued.commandId, /^cmd-\d+$/u);
+  assert.equal(steered.type, "input.steered");
+  assert.match(steered.commandId, /^cmd-\d+$/u);
+  // commandCounter 全 fake 共享，只断自增关系（cmd-N 严格递增）
+  assert.equal(
+    Number(steered.commandId.slice(4)),
+    Number(queued.commandId.slice(4)) + 1,
+    "commandId 应逐条自增",
+  );
+});
+
+test("resetEventSeq：游标回退——旧 after 查询返回空且 nextSeq=0，挂起长轮询被唤醒", async () => {
+  const { taskId } = await createTask(config, { workspacePath: "/w9", prompt: "p" });
+  await sendMessage(config, taskId, "第一句"); // seq=1
+  const page0 = await getEvents(config, taskId, 0, 0);
+  assert.equal(page0.nextSeq, 1);
+
+  // 挂起中的长轮询（after=99）被 resetEventSeq 唤醒，返回空页且游标回退到 0
+  const pending = getEvents(config, taskId, 99, 5000);
+  await new Promise((resolve) => setTimeout(resolve, 50)); // 让长轮询先挂上
+  fake.resetEventSeq(taskId);
+  const t0 = Date.now();
+  const page1 = await pending;
+  assert.ok(Date.now() - t0 < 2000, `resetEventSeq 应唤醒挂起的长轮询，实际等了 ${Date.now() - t0}ms`);
+  assert.deepEqual(page1, { events: [], nextSeq: 0 });
+
+  // 旧游标直接查：空页、nextSeq=0（不是停在旧值 1）
+  const page2 = await getEvents(config, taskId, 1, 0);
+  assert.deepEqual(page2, { events: [], nextSeq: 0 });
+});
+
+test("ZCODE_SUB_DEBUG=1：debug.log 记请求行（不含 body 与 token），网络失败记 ERR", async () => {
+  const debugHome = mkdtempSync(join(tmpdir(), "zcode-sub-debug-"));
+  const promptMark = "debug-secret-prompt-不应入日志";
+  const tokenMark = "tok-debug-不应入日志";
+  const prevDebug = process.env.ZCODE_SUB_DEBUG;
+  const prevHome = process.env.ZCODE_SUB_HOME;
+  process.env.ZCODE_SUB_DEBUG = "1";
+  process.env.ZCODE_SUB_HOME = debugHome; // getHome() 优先读该 env
+  try {
+    await probeHealth(config);
+    await assert.rejects(() =>
+      createTask({ ...config, apiPort: 1, token: tokenMark }, { workspacePath: "/w", prompt: promptMark }),
+    );
+
+    const logText = readFileSync(join(debugHome, "debug.log"), "utf8");
+    const lines = logText.trimEnd().split("\n");
+
+    const healthLine = lines.find((line) => line.includes("GET /health"));
+    assert.ok(healthLine, `应有 /health 请求行：\n${logText}`);
+    assert.match(healthLine, /^\d{4}-\d{2}-\d{2}T[\d:.]+Z GET \/health → 200 \d+字符$/u);
+
+    assert.ok(
+      lines.some((line) => line.includes(" POST /api/tasks → ERR ")),
+      `网络失败应记 ERR 行：\n${logText}`,
+    );
+
+    assert.ok(!logText.includes(promptMark), "debug.log 不得含请求 body（prompt 内容）");
+    assert.ok(!logText.includes(tokenMark), "debug.log 不得含 token");
+  } finally {
+    if (prevDebug === undefined) delete process.env.ZCODE_SUB_DEBUG;
+    else process.env.ZCODE_SUB_DEBUG = prevDebug;
+    if (prevHome === undefined) delete process.env.ZCODE_SUB_HOME;
+    else process.env.ZCODE_SUB_HOME = prevHome;
+    rmSync(debugHome, { recursive: true, force: true });
+  }
 });

@@ -1,57 +1,129 @@
-import { existsSync, readFileSync } from "node:fs";
-import { ensureHome } from "./home.js";
+import { mkdirSync, readdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
+import { assertValidName, isValidName } from "./home.js";
 import { atomicWriteJson } from "./config.js";
 
-// 任务登记表：name → { taskId, workspacePath, createdAt, lastStatus, eventsSeq }。
+// 任务登记表：每任务一分片 <home>/tasks/<name>.json，
+// 内容 { taskId, workspacePath, createdAt, lastStatus, eventsSeq }。
+// 分片替代旧单文件 tasks.json 的读改写——旧实现在多进程并发登记时会互相
+// 覆盖丢登记，现在登记走独占创建（wx），同名竞态恰好只有一方成功。
 // taskId 指向 ZCode 本机任务 API 的任务；eventsSeq 只反映本机已见的事件数。
 
-export function loadTasks(home) {
-  const paths = ensureHome(home);
-  if (!existsSync(paths.tasksFile)) return { tasks: {} };
+function tasksDirOf(home) {
+  return join(home, "tasks");
+}
+
+function shardFileOf(home, name) {
+  return join(tasksDirOf(home), `${name}.json`);
+}
+
+function ensureTasksDir(home) {
+  const dir = tasksDirOf(home);
+  mkdirSync(dir, { recursive: true });
+  return dir;
+}
+
+function nameTakenError(name) {
+  const err = new Error(`zcode_name_taken: 任务名 "${name}" 已存在，换一个名字`);
+  err.code = "zcode_name_taken";
+  err.exitCode = 7;
+  return err;
+}
+
+// 读单个分片。missing → { missing: true }；不是合法 JSON 对象 → { corrupt: true }；
+// 正常 → { record }。损坏不在读取时备份：备份是写副作用，只留给 updateTask。
+function readShard(file) {
+  let raw;
   try {
-    const parsed = JSON.parse(readFileSync(paths.tasksFile, "utf8"));
-    if (typeof parsed === "object" && parsed !== null && typeof parsed.tasks === "object" && parsed.tasks !== null) {
-      return { tasks: parsed.tasks };
-    }
-  } catch {
-    // 损坏按空表起步，避免一条坏记录挡住所有命令
+    raw = readFileSync(file, "utf8");
+  } catch (err) {
+    if (err.code === "ENOENT") return { missing: true };
+    return { corrupt: true };
   }
-  return { tasks: {} };
+  try {
+    const parsed = JSON.parse(raw);
+    if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
+      return { corrupt: true };
+    }
+    return { record: parsed };
+  } catch {
+    return { corrupt: true };
+  }
+}
+
+// 损坏分片挪到 <name>.json.corrupt-<时间戳>；挪不动（如权限）就留在原地，静默跳过。
+function backupCorruptShard(file) {
+  try {
+    renameSync(file, `${file}.corrupt-${Date.now()}`);
+  } catch {
+    // 备份失败不影响"按不存在处理"的结果
+  }
+}
+
+export function loadTasks(home) {
+  let entries;
+  try {
+    entries = readdirSync(tasksDirOf(home));
+  } catch {
+    // 目录不存在 → 空表
+    return { tasks: {} };
+  }
+  const tasks = {};
+  for (const entry of entries) {
+    if (!entry.endsWith(".json")) continue;
+    const name = entry.slice(0, -".json".length);
+    if (!isValidName(name)) continue;
+    const shard = readShard(join(tasksDirOf(home), entry));
+    if (shard.record !== undefined) tasks[name] = shard.record;
+    // 损坏分片聚合时只跳过，不备份：loadTasks 是只读路径，不产生写副作用
+  }
+  return { tasks };
 }
 
 export function saveTasks(home, store) {
-  const paths = ensureHome(home);
-  atomicWriteJson(paths.tasksFile, store);
+  const dir = ensureTasksDir(home);
+  for (const [name, record] of Object.entries(store?.tasks ?? {})) {
+    assertValidName(name);
+    atomicWriteJson(join(dir, `${name}.json`), record);
+  }
   return store;
 }
 
 export function registerTask(home, name, { taskId, workspacePath }) {
-  const store = loadTasks(home);
-  if (store.tasks[name]) {
-    const err = new Error(`zcode_name_taken: 任务名 "${name}" 已存在，换一个名字`);
-    err.code = "zcode_name_taken";
-    err.exitCode = 7;
-    throw err;
-  }
-  store.tasks[name] = {
+  assertValidName(name);
+  const file = join(ensureTasksDir(home), `${name}.json`);
+  const record = {
     taskId,
     workspacePath,
     createdAt: Date.now(),
     lastStatus: "dispatched",
     eventsSeq: 0,
   };
-  saveTasks(home, store);
-  return store.tasks[name];
+  // 独占创建：两进程同时登记同名，只有抢先建文件的一方落盘
+  try {
+    writeFileSync(file, `${JSON.stringify(record, null, 2)}\n`, { flag: "wx" });
+  } catch (err) {
+    if (err.code === "EEXIST") throw nameTakenError(name);
+    throw err;
+  }
+  return record;
 }
 
 export function updateTask(home, name, patch) {
-  const store = loadTasks(home);
-  const task = store.tasks[name];
-  if (!task) return null;
-  if (patch.lastStatus !== undefined) task.lastStatus = patch.lastStatus;
-  if (patch.eventsSeq !== undefined) task.eventsSeq = patch.eventsSeq;
-  saveTasks(home, store);
-  return task;
+  assertValidName(name);
+  const file = shardFileOf(home, name);
+  const shard = readShard(file);
+  if (shard.missing) return null;
+  if (shard.corrupt) {
+    // 先备份坏分片再按不存在处理；写路径允许副作用
+    backupCorruptShard(file);
+    return null;
+  }
+  const record = shard.record;
+  if (patch.lastStatus !== undefined) record.lastStatus = patch.lastStatus;
+  if (patch.eventsSeq !== undefined) record.eventsSeq = patch.eventsSeq;
+  atomicWriteJson(file, record);
+  return record;
 }
 
 export function getTask(home, name) {

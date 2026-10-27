@@ -7,15 +7,15 @@
 
 | 接口名 | 调用点（文件:行） | 注意事项 |
 |---|---|---|
-| `GET /health` | src/api.js:52 | 校验 `api=="zcode-local-task-api"` 且 `version==2`，否则视为不是本 API |
-| `POST /api/tasks` | src/api.js:69（cmdRun src/cli.js:249） | body `{workspacePath, prompt, title}`；title 传本地任务名；409 `{error:"workspace_not_open"}` → exit 3 |
-| `POST /api/tasks/:id/messages` | src/api.js:89（cmdSend src/cli.js:296、cmdResume src/cli.js:310） | delivery auto/queue/steer；auto=GUI 运行中默认（queue/guide 由命令层裁决，ConversationComposer.tsx:224-225） |
-| `POST /api/tasks/:id/stop` | src/api.js:104（cmdStop src/cli.js:336） | 202 即受理 |
-| `GET /api/tasks/:id` | src/api.js:118（cmdResult src/cli.js:349、cmdResume 前置检查） | status 五值；lastAssistantText 为最后完整助手回复 |
-| `GET /api/tasks/:id/events?after=&waitMs=` | src/api.js:130（cmdWait src/cli.js:380） | 长轮询 ≤30s；`{resync:true}` 溢出改查 GET；事件字段假设 `text`/`error`/`summary`（契约正文未点名，见 spec §3 末清单） |
+| `GET /health` | src/api.js:87 | 校验 `api=="zcode-local-task-api"` 且 `version==2`，否则视为不是本 API |
+| `POST /api/tasks` | src/api.js:104（cmdRun src/cli.js:279） | body `{workspacePath, prompt, title}`；title 传本地任务名；409 `{error:"workspace_not_open"}` → exit 3 |
+| `POST /api/tasks/:id/messages` | src/api.js:124（cmdSend src/cli.js:328、cmdResume src/cli.js:342） | delivery auto/queue/steer；auto=GUI 运行中默认（queue/guide 由命令层裁决，ConversationComposer.tsx:224-225） |
+| `POST /api/tasks/:id/stop` | src/api.js:140（cmdStop src/cli.js:368） | 202 即受理 |
+| `GET /api/tasks/:id` | src/api.js:156（cmdResult src/cli.js:381、cmdResume 前置检查、cmdRun 并发计数刷新） | status 五值；lastAssistantText 为最后完整助手回复 |
+| `GET /api/tasks/:id/events?after=&waitMs=` | src/api.js:169（cmdWait src/cli.js:412） | 长轮询 ≤30s；`{resync:true}` 溢出改查 GET；事件字段终值 `text`/`error`/`summary`/`turnId`/`commandId`（与 A 实装对齐，清单在 spec §3）；ZCode 重启后 seq 可能回退，客户端重置游标 |
 | `local-task-api.json` 开关文件 | cmdSetup src/cli.js:117（读/写 `{enabled,port,token}`，0600） | ZCode 只读该文件；桥接 setup 是写入方之一（契约第 1 条） |
-| `mcp.servers` stdio 配置（command/args/env） | mcpConfigSnippet src/cli.js:202 | 需 `features.mcp` 开启；env 只传 `ZCODE_SUB_HOME` |
-| MCP `reply_to_parent(task, message)`（本仓提供，ZCode 拉起） | src/mcp.js（appendReplyLine src/mailbox.js:14、登记校验 src/tasks.js:28） | ZCode 以真实用户身份拉起 stdio server，直写状态目录信箱 |
+| `mcp.servers` stdio 配置（command/args/env） | mcpConfigSnippet src/cli.js:207 | 需 `features.mcp` 开启；env 只传 `ZCODE_SUB_HOME` |
+| MCP `reply_to_parent(task, message)`（本仓提供，ZCode 拉起） | src/mcp.js（appendReplyLine src/mailbox.js:14、登记校验 src/tasks.js:92） | ZCode 以真实用户身份拉起 stdio server，直写状态目录信箱 |
 
 ## 业务域地图
 

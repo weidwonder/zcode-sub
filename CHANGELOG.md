@@ -14,11 +14,18 @@
 
 ### 变更
 
-（无）
+- 并发派发上限：同时非终态任务数默认 4（`ZCODE_SUB_MAX_RUNNING` 调整），超限 `zcode_too_many_running`（退出码 8）。
+- 任务登记由单文件 tasks.json 改为每任务分片 `tasks/<name>.json`（`wx` 独占创建防同名竞态；并发丢登记修复）。
+- 所有按 taskId 的 API 请求携带 workspacePath（ZCode 重启丢归属表时据此路由）；wait 处理事件序号回退。
+- wait 过程事件正文超 2000 字符截断（reply 行与 result 保持全文）。
+- setup `--api-port` 与已存在开关文件冲突时报错（以开关文件为准，不覆盖），退出码 1。
+- `zcode-sub mcp` 的 serverInfo.version 与 Skill metadata.version 统一读 package.json。
 
 ### 修复
 
-（无）
+- POST 请求不再自动重试：创建/写入失败即报 `zcode_api_unreachable` 并提示「任务可能已创建，先用 list / GUI 核对」（防双建任务）；GET 保留一次重试。
+- `getEvents` 对 HTTP ≥400 统一抛 `zcode_send_failed`（此前 404 以 200 语义 payload 返回）。
+- 新增 `ZCODE_SUB_DEBUG=1` 请求/响应摘要日志（debug.log，不含 token 与 prompt 正文）。
 
 ### 内部
 

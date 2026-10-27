@@ -1,12 +1,12 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, before, test } from "node:test";
 import { startFakeZcode } from "./helpers/fake-zcode.js";
 import { loadConfig, saveConfig, updateConfig } from "../src/config.js";
-import { getTask, loadTasks } from "../src/tasks.js";
+import { getTask, loadTasks, updateTask } from "../src/tasks.js";
 import { appendReplyLine } from "../src/mailbox.js";
 
 const ROOT = join(import.meta.dirname, "..");
@@ -20,6 +20,10 @@ let setupHomeA;
 let setupDataA;
 let setupHomeB;
 let setupDataB;
+let setupHomeC; // setup 端口冲突用
+let setupDataC;
+let capHomeA; // 并发上限：默认上限 4 的场景
+let capHomeB; // 并发上限：ZCODE_SUB_MAX_RUNNING=2 的场景
 
 // fake Zcode 跑在本测试进程内，必须用异步 spawn——spawnSync 会冻结事件循环，
 // 让 fake 无法响应 CLI 子进程的请求。
@@ -40,11 +44,18 @@ function runCli(args, extraEnv = {}) {
   });
 }
 
-async function dispatchTask(name, cwd = `/tmp/ws-${name}`) {
-  const result = await runCli(["run", `任务正文-${name}`, "--cwd", cwd, "--name", name]);
+async function dispatchTask(name, cwd = `/tmp/ws-${name}`, extraEnv = {}) {
+  const result = await runCli(["run", `任务正文-${name}`, "--cwd", cwd, "--name", name], extraEnv);
   assert.equal(result.status, 0, result.stderr);
   return JSON.parse(result.stdout);
 }
+
+// 本地登记置终态：run 的并发上限按本地未结束任务计数，测试收尾归位避免互相串扰。
+function settle(name, status = "idle") {
+  updateTask(home, name, { lastStatus: status });
+}
+
+const escapeForRegExp = (text) => text.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&");
 
 before(async () => {
   fake = await startFakeZcode({ token: TOKEN });
@@ -56,10 +67,16 @@ before(async () => {
   setupHomeB = mkdtempSync(join(tmpdir(), "zcode-sub-setup-b-"));
   setupDataB = mkdtempSync(join(tmpdir(), "zcode-sub-data-b-"));
   saveConfig(setupHomeB, { apiPort: 1, token: "old-token" });
+  setupHomeC = mkdtempSync(join(tmpdir(), "zcode-sub-setup-c-"));
+  setupDataC = mkdtempSync(join(tmpdir(), "zcode-sub-data-c-"));
+  capHomeA = mkdtempSync(join(tmpdir(), "zcode-sub-cap-a-"));
+  capHomeB = mkdtempSync(join(tmpdir(), "zcode-sub-cap-b-"));
+  saveConfig(capHomeA, { apiPort: fake.port, token: TOKEN });
+  saveConfig(capHomeB, { apiPort: fake.port, token: TOKEN });
 });
 
 after(async () => {
-  for (const dir of [home, setupHomeA, setupHomeB, setupDataA, setupDataB]) {
+  for (const dir of [home, setupHomeA, setupHomeB, setupDataA, setupDataB, setupHomeC, setupDataC, capHomeA, capHomeB]) {
     rmSync(dir, { recursive: true, force: true });
   }
   await fake.stop();
@@ -124,6 +141,60 @@ test("setup：开关文件已存在且启用 → 复用 token/port，不重写�
   assert.match(result.stdout, /本机任务 API 正常/u);
 });
 
+test("setup：--api-port 与开关文件端口冲突 → 提示并以开关文件为准，其余步骤照常", async () => {
+  const switchDir = join(setupDataC, ".zcode", "v2");
+  mkdirSync(switchDir, { recursive: true });
+  const switchFile = join(switchDir, "local-task-api.json");
+  const beforeText = `${JSON.stringify({ enabled: true, port: setupFake.port, token: "tok-switch-c" }, null, 2)}\n`;
+  writeFileSync(switchFile, beforeText, { mode: 0o600 });
+
+  const result = await runCli(["setup", "--api-port", String(setupFake.port + 1)], {
+    ZCODE_SUB_HOME: setupHomeC,
+    ZCODE_DATA_BASE_DIR: setupDataC,
+  });
+  assert.equal(result.status, 1);
+  assert.match(result.stdout, /✗ 端口冲突：开关文件端口为/u);
+  assert.ok(result.stdout.includes(`--api-port 指定 ${setupFake.port + 1}；以开关文件为准`), result.stdout);
+  assert.ok(result.stdout.includes(switchFile), "冲突提示应含开关文件路径");
+  assert.match(result.stdout, /开关文件已存在并启用/u);
+  assert.match(result.stdout, /✓ 本机任务 API 正常/u, "冲突不阻断健康检查（用开关文件端口）");
+  assert.match(result.stdout, /mcp\.servers/u, "MCP 片段照常打印");
+
+  assert.equal(readFileSync(switchFile, "utf8"), beforeText, "开关文件不应被重写");
+  const config = loadConfig(setupHomeC);
+  assert.equal(config.apiPort, setupFake.port, "后续步骤用开关文件端口");
+  assert.equal(config.token, "tok-switch-c");
+});
+
+test("setup：开关文件目录不可写 → 手动创建指引 + dwc grant 提示，流程继续", async () => {
+  if (typeof process.getuid === "function" && process.getuid() === 0) {
+    return; // root 模拟不了不可写
+  }
+  const roHome = mkdtempSync(join(tmpdir(), "zcode-sub-setup-ro-home-"));
+  const roData = mkdtempSync(join(tmpdir(), "zcode-sub-setup-ro-data-"));
+  chmodSync(roData, 0o555);
+  try {
+    const result = await runCli(["setup", "--api-port", String(setupFake.port)], {
+      ZCODE_SUB_HOME: roHome,
+      ZCODE_DATA_BASE_DIR: roData,
+    });
+    assert.equal(result.status, 0, result.stderr);
+    assert.match(result.stdout, /✗ 开关文件不可写/u);
+    assert.match(result.stdout, /完整 token 已存入/u);
+    assert.match(
+      result.stdout,
+      new RegExp(`dwc grant ${escapeForRegExp(join(roData, ".zcode", "v2"))} 后重跑 setup`),
+      "应提示对开关文件所在目录 dwc grant",
+    );
+    assert.match(result.stdout, /✓ 本机任务 API 正常/u, "开关文件不可写不阻断健康检查");
+    assert.match(result.stdout, /状态目录可写/u);
+  } finally {
+    chmodSync(roData, 0o700);
+    rmSync(roHome, { recursive: true, force: true });
+    rmSync(roData, { recursive: true, force: true });
+  }
+});
+
 test("run：stdout 一行 JSON；fake 收到 title/workspace/prompt；本地登记", async () => {
   const result = await runCli(["run", "修复登录页崩溃", "--cwd", "/tmp/demo", "--name", "fix-1"]);
   assert.equal(result.status, 0, result.stderr);
@@ -157,6 +228,7 @@ test("run：重名 → exit 7（ZCode 侧已创建、本地登记拒绝）", asy
   assert.equal(dup.status, 7);
   assert.match(dup.stderr, /zcode_name_taken/u);
   assert.match(dup.stderr, /taskId=/u, "应提示 ZCode 侧已创建的 taskId");
+  settle("fix-1");
 });
 
 test("run：--cwd 非绝对路径 → exit 1；省 --name 时自动生成 zsub- 名", async () => {
@@ -167,7 +239,55 @@ test("run：--cwd 非绝对路径 → exit 1；省 --name 时自动生成 zsub- 
   const auto = await runCli(["run", "自动命名任务", "--cwd", "/tmp/auto"]);
   assert.equal(auto.status, 0, auto.stderr);
   const payload = JSON.parse(auto.stdout);
-  assert.match(payload.name, /^zsub-\d{8}-\d{6}$/u);
+  assert.match(payload.name, /^zsub-\d{8}-\d{6}-\d{3}$/u);
+  settle(payload.name);
+});
+
+test("run：自动命名带毫秒尾巴——同秒先后两次也不同名", async () => {
+  const r1 = await runCli(["run", "自动命名 A", "--cwd", "/tmp/auto-ms"]);
+  assert.equal(r1.status, 0, r1.stderr);
+  const n1 = JSON.parse(r1.stdout).name;
+  settle(n1);
+
+  const r2 = await runCli(["run", "自动命名 B", "--cwd", "/tmp/auto-ms"]);
+  assert.equal(r2.status, 0, r2.stderr);
+  const n2 = JSON.parse(r2.stdout).name;
+  settle(n2);
+
+  assert.match(n1, /^zsub-\d{8}-\d{6}-\d{3}$/u);
+  assert.match(n2, /^zsub-\d{8}-\d{6}-\d{3}$/u);
+  assert.notEqual(n1, n2);
+});
+
+test("run：并发派发上限——4 个未结束第 5 个 exit 8；MAX_RUNNING=2 时第 3 个 exit 8", async () => {
+  const capEnvA = { ZCODE_SUB_HOME: capHomeA };
+  // 每派一个立即在 fake 标 running：后续派发的计数刷新会把本地 lastStatus 刷成 running 并计入
+  for (const name of ["cap-1", "cap-2", "cap-3", "cap-4"]) {
+    const { taskId } = await dispatchTask(name, `/tmp/cap-${name}`, capEnvA);
+    fake.createTaskAlreadyRunning(taskId);
+  }
+
+  const fifth = await runCli(["run", "超限任务", "--cwd", "/tmp/cap-x", "--name", "cap-5"], capEnvA);
+  assert.equal(fifth.status, 8, fifth.stderr);
+  assert.match(fifth.stderr, /zcode_too_many_running/u);
+  assert.match(fifth.stderr, /已有 4 个任务未结束（上限 4）/u);
+  assert.ok(
+    !fake.calls.some(
+      (call) => call.method === "POST" && call.url.split("?")[0] === "/api/tasks" && call.body?.title === "cap-5",
+    ),
+    "超限应在 createTask 之前拒绝，不建新对话",
+  );
+
+  const capEnvB = { ZCODE_SUB_HOME: capHomeB, ZCODE_SUB_MAX_RUNNING: "2" };
+  const a = await dispatchTask("cap-a", "/tmp/cap-a", capEnvB);
+  fake.createTaskAlreadyRunning(a.taskId);
+  const b = await dispatchTask("cap-b", "/tmp/cap-b", capEnvB);
+  fake.createTaskAlreadyRunning(b.taskId);
+
+  const third = await runCli(["run", "超限任务", "--cwd", "/tmp/cap-x", "--name", "cap-c"], capEnvB);
+  assert.equal(third.status, 8, third.stderr);
+  assert.match(third.stderr, /zcode_too_many_running/u);
+  assert.match(third.stderr, /已有 2 个任务未结束（上限 2）/u);
 });
 
 test("run：工作区未打开（409）→ exit 3 + zcode_workspace_not_open", async () => {
@@ -193,6 +313,7 @@ test("并行两任务：taskId 不同；wait A 立即拿到事件且 eventsSeq �
   const waitB = await runCli(["wait", "para-b", "--timeout", "2"]);
   assert.equal(waitB.status, 2);
   assert.equal(waitB.stdout, "TIMEOUT\n");
+  settle("para-b");
 });
 
 test("send：空闲 sent；运行中 auto→queued、--steer→steered、--queue→queued", async () => {
@@ -216,6 +337,7 @@ test("send：空闲 sent；运行中 auto→queued、--steer→steered、--queue
   const forced = await runCli(["send", "send-1", "强制排队", "--queue"]);
   assert.equal(forced.status, 0, forced.stderr);
   assert.match(forced.stdout, /投递结果：queued/u);
+  settle("send-1");
 });
 
 test("resume：空闲接续 sent；运行中拒绝（exit 4 busy_for_resume）", async () => {
@@ -229,6 +351,7 @@ test("resume：空闲接续 sent；运行中拒绝（exit 4 busy_for_resume）",
   const busy = await runCli(["resume", "res-1", "又一句"]);
   assert.equal(busy.status, 4);
   assert.match(busy.stderr, /zcode_task_busy_for_resume/u);
+  settle("res-1");
 });
 
 test("stop：打印已请求停止", async () => {
@@ -236,6 +359,7 @@ test("stop：打印已请求停止", async () => {
   const result = await runCli(["stop", "stop-1"]);
   assert.equal(result.status, 0, result.stderr);
   assert.match(result.stdout, /✓ 已请求停止/u);
+  settle("stop-1");
 });
 
 test("result：idle 出最后回复全文；running 还在跑；waiting_permission 带 GUI 提示", async () => {
@@ -259,6 +383,17 @@ test("result：idle 出最后回复全文；running 还在跑；waiting_permissi
   assert.match(waiting.stdout, /还在跑（status=waiting_permission）/u);
   assert.match(waiting.stdout, /⏳ 请在 ZCode GUI 处理/u);
   assert.match(waiting.stdout, /可用 zcode-sub wait result-1 收实时事件/u);
+  settle("result-1");
+});
+
+test("result：未知 status → 打印原文并按非终态处理", async () => {
+  const { taskId } = await dispatchTask("unk-1");
+  fake.setTaskStatus(taskId, "weird_state");
+  const result = await runCli(["result", "unk-1"]);
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /状态未知（原文 weird_state）/u);
+  assert.equal(loadTasks(home).tasks["unk-1"].lastStatus, "weird_state");
+  settle("unk-1");
 });
 
 test("result：终态但无回复文本 → 打印占位提示", async () => {
@@ -295,12 +430,11 @@ test("wait：事件打印与状态推进、信箱优先、permission 提示、re
   assert.ok(permission.stdout.includes("[permission.requested] 要执行终端命令"));
   assert.match(permission.stdout, /⏳ 请在 ZCode GUI 处理该权限请求/u);
 
-  // 4) 事件缓冲溢出 → resync 改查状态
+  // 4) 事件缓冲溢出 → resync 提示改用 result 轮询，并同步末次状态
   fake.simulateResync(taskId);
   const resync = await runCli(["wait", "wait-1", "--timeout", "5"]);
   assert.equal(resync.status, 0, resync.stderr);
-  assert.match(resync.stdout, /⚠ 事件缓冲溢出，改查任务状态：idle/u);
-  assert.match(resync.stdout, /完整过程见 ZCode GUI/u);
+  assert.match(resync.stdout, /⚠ 事件缓冲溢出，改用 zcode-sub result wait-1 轮询（完整过程见 ZCode GUI）/u);
   assert.equal(loadTasks(home).tasks["wait-1"].lastStatus, "idle");
 });
 
@@ -313,6 +447,75 @@ test("wait：长轮询挂起中事件到达 → 立即唤醒而非等满超时",
   assert.equal(result.status, 0, result.stderr);
   assert.ok(result.stdout.includes("[assistant.message] 挂起中到达"));
   assert.ok(elapsed < 5000, `应被长轮询立即唤醒，实际 ${elapsed}ms`);
+  settle("wait-live");
+});
+
+test("wait：事件正文超 2000 字符截断（reply 信箱行保持全文）", async () => {
+  const { taskId } = await dispatchTask("tr-1");
+
+  fake.emitEvent(taskId, "assistant.message", { text: "x".repeat(3000) });
+  const got = await runCli(["wait", "tr-1", "--timeout", "5"]);
+  assert.equal(got.status, 0, got.stderr);
+  assert.ok(got.stdout.includes("x".repeat(2000)), "应打印前 2000 字符");
+  assert.ok(!got.stdout.includes("x".repeat(2001)), "第 2001 字符起不应打印");
+  assert.ok(got.stdout.includes("…（共 3000 字符，全文用 result 或 ZCode GUI 查看）"));
+
+  appendReplyLine(home, "tr-1", "y".repeat(3000));
+  const reply = await runCli(["wait", "tr-1", "--timeout", "5"]);
+  assert.equal(reply.status, 0, reply.stderr);
+  assert.ok(reply.stdout.includes(`[reply] ${"y".repeat(3000)}`), "reply 信箱行不截断");
+  settle("tr-1");
+});
+
+test("wait：ZCode 重启事件缓冲清空 → 游标回退继续等新事件", async () => {
+  const { taskId } = await dispatchTask("rb-1");
+
+  fake.emitEvent(taskId, "assistant.message", { text: "重启前事件" });
+  const first = await runCli(["wait", "rb-1", "--timeout", "5"]);
+  assert.equal(first.status, 0, first.stderr);
+  assert.equal(loadTasks(home).tasks["rb-1"].eventsSeq, 1);
+
+  // 先等 wait 的长轮询挂进 fake（calls 里出现本次 events 请求）再触发重置：
+  // resetEventSeq 会唤醒挂起中的长轮询，CLI 收到空页且 nextSeq=0 < after=1 → 回退游标
+  const callsBefore = fake.calls.length;
+  const pending = runCli(["wait", "rb-1", "--timeout", "8"]);
+  const t0 = Date.now();
+  while (fake.calls.length === callsBefore && Date.now() - t0 < 5000) {
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  }
+  assert.ok(fake.calls.length > callsBefore, "wait 的 events 请求应已到达 fake");
+  fake.resetEventSeq(taskId);
+  setTimeout(() => fake.emitEvent(taskId, "assistant.message", { text: "重启后事件" }), 300);
+
+  const second = await pending;
+  assert.equal(second.status, 0, second.stderr);
+  assert.match(second.stdout, /⚠ 事件序列已重置（ZCode 可能重启）：1→0，继续等待新事件/u);
+  assert.ok(second.stdout.includes("[assistant.message] 重启后事件"), "回退后应继续收到新事件");
+  assert.equal(loadTasks(home).tasks["rb-1"].eventsSeq, 1, "回退到 0 后应随新事件推进回 1");
+  settle("rb-1");
+});
+
+test("workspacePath 传递：send/resume/stop/result 的请求都带登记的 workspacePath", async () => {
+  const ws = "/tmp/ws-wp-pass";
+  const { taskId } = await dispatchTask("wp-1", ws);
+
+  await runCli(["send", "wp-1", "补一句"]);
+  await runCli(["resume", "wp-1", "续一句"]);
+  await runCli(["stop", "wp-1"]);
+  await runCli(["result", "wp-1"]);
+
+  const enc = encodeURIComponent(ws);
+  const hasWs = (call) => call.body?.workspacePath === ws || call.url.includes(`workspacePath=${enc}`);
+  const posts = (suffix) => fake.calls.filter((call) => call.url.split("?")[0] === `/api/tasks/${taskId}${suffix}`);
+  const gets = fake.calls.filter((call) => call.method === "GET" && call.url.split("?")[0] === `/api/tasks/${taskId}`);
+
+  assert.ok(posts("/messages").length >= 2, "send 与 resume 各一次 messages 调用");
+  assert.ok(posts("/messages").every(hasWs), "messages 请求应带登记的 workspacePath");
+  assert.equal(posts("/stop").length, 1);
+  assert.ok(posts("/stop").every(hasWs), "stop 请求应带登记的 workspacePath");
+  assert.ok(gets.length >= 2, "resume 与 result 各一次 getTask 查询");
+  assert.ok(gets.every(hasWs), "getTask 查询应带登记的 workspacePath");
+  settle("wp-1");
 });
 
 test("错误：token 错 → exit 5；端口无人监听 → exit 2", async () => {
@@ -344,4 +547,35 @@ test("list --json：包含 run 过的任务；空表文本提示", async () => {
   const empty = await runCli(["list"], { ZCODE_SUB_HOME: setupHomeA });
   assert.equal(empty.status, 0, empty.stderr);
   assert.match(empty.stdout, /（还没有任务；用 zcode-sub run 派发）/u);
+
+  const table = await runCli(["list"]);
+  assert.equal(table.status, 0, table.stderr);
+  assert.equal(table.stdout.split("\n")[0], "name\ttaskId(前8位)\tlastStatus\tcreatedAt\tworkspacePath");
+  const fix1Line = table.stdout.split("\n").find((line) => line.startsWith("fix-1\t"));
+  assert.ok(fix1Line, "文本表应有 fix-1 行");
+  const cols = fix1Line.split("\t");
+  assert.equal(cols.length, 5);
+  assert.equal(cols[2], "idle");
+  assert.ok(!Number.isNaN(Date.parse(cols[3])), `createdAt 应为 ISO 时间：${cols[3]}`);
+  assert.equal(cols[4], "/tmp/demo");
+});
+
+test("forgetOwnership：带 workspacePath 可按工作区重绑成功；本地 workspacePath 改错 → exit 4", async () => {
+  await dispatchTask("own-1", "/tmp/ws-own");
+
+  fake.forgetOwnership();
+  const rebound = await runCli(["result", "own-1"]);
+  assert.equal(rebound.status, 0, rebound.stderr);
+  assert.match(rebound.stdout, /状态：idle/u);
+
+  // 直接改本地分片 <home>/tasks/<name>.json 的 workspacePath → 请求带错 → 归属不符
+  const shardFile = join(home, "tasks", "own-1.json");
+  const shard = JSON.parse(readFileSync(shardFile, "utf8"));
+  assert.equal(shard.workspacePath, "/tmp/ws-own");
+  shard.workspacePath = "/tmp/ws-mutated";
+  writeFileSync(shardFile, `${JSON.stringify(shard, null, 2)}\n`);
+
+  const mismatch = await runCli(["result", "own-1"]);
+  assert.equal(mismatch.status, 4);
+  assert.match(mismatch.stderr, /zcode_send_failed/u);
 });

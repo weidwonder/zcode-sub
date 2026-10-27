@@ -1,17 +1,17 @@
 import { randomBytes } from "node:crypto";
-import { chmodSync, existsSync, mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
 import { userInfo } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { getHome, assertValidName } from "./home.js";
-import { loadConfig, createInitialConfig, updateConfig } from "./config.js";
+import { atomicWriteJson, loadConfig, createInitialConfig, updateConfig } from "./config.js";
 import * as api from "./api.js";
 import * as tasks from "./tasks.js";
 import { readMailboxLines, readCursor, writeCursor } from "./mailbox.js";
 
 // CLI 分发。退出码表：1 用法/未配置/本地无此任务 / 2 API 不可达、wait 超时 /
 // 3 工作区未打开 / 4 发送失败、任务已删（API 侧）、resume 时任务忙 / 5 鉴权失败 /
-// 7 任务名非法或重名。
+// 7 任务名非法或重名 / 8 并发派发超上限。
 
 const USAGE = `zcode-sub 用法（把 ZCode 桌面版当子代理）：
 
@@ -119,15 +119,23 @@ async function cmdSetup(home, flags) {
   const switchFile = join(dataBaseDir, ".zcode", "v2", "local-task-api.json");
   let config = loadConfig(home) ?? createInitialConfig();
 
+  let requestedPort = null;
   if (typeof flags["api-port"] === "string") {
     const port = Number.parseInt(flags["api-port"], 10);
     if (Number.isInteger(port) && port > 0) {
+      requestedPort = port;
       config = updateConfig(home, { apiPort: port });
     }
   }
 
   const existing = readSwitchFile(switchFile);
   if (existing) {
+    if (requestedPort !== null && requestedPort !== existing.port) {
+      process.stdout.write(
+        `✗ 端口冲突：开关文件端口为 ${existing.port}，--api-port 指定 ${requestedPort}；以开关文件为准。要改端口请手工编辑 ${switchFile} 后重启 ZCode，或删除该文件重跑 setup。\n`,
+      );
+      process.exitCode = 1;
+    }
     // 开关文件是 ZCode 侧的事实源：token/port 以它为准，不重写。
     config = updateConfig(home, { apiPort: existing.port, token: existing.token });
     process.stdout.write(`✓ 开关文件已存在并启用：${switchFile}（token 复用，port=${existing.port}）\n`);
@@ -143,6 +151,7 @@ async function cmdSetup(home, flags) {
         `✗ 开关文件不可写（${switchFile}）。请手动创建，内容：{"enabled": true, "port": ${config.apiPort}, "token": "${token.slice(0, 4)}****"}，然后重启 ZCode。\n`,
       );
       process.stdout.write(`  完整 token 已存入 ${join(home, "config.json")}，可打开查看。\n`);
+      process.stdout.write(`  若需本工具自动写入：dwc grant ${dirname(switchFile)} 后重跑 setup。\n`);
     }
   }
 
@@ -192,18 +201,7 @@ function readSwitchFile(file) {
 // 0600 原子写：token 不扩大可读面。
 function writeSwitchFile(file, value) {
   mkdirSync(dirname(file), { recursive: true });
-  const tmp = join(dirname(file), `.${basenameOf(file)}.${process.pid}.tmp`);
-  writeFileSync(tmp, `${JSON.stringify(value, null, 2)}\n`, { mode: 0o600 });
-  try {
-    chmodSync(tmp, 0o600);
-  } catch {
-    // 平台不支持时保留 writeFileSync 的 mode
-  }
-  renameSync(tmp, file);
-}
-
-function basenameOf(file) {
-  return file.split(/[\\/]/u).at(-1) ?? file;
+  atomicWriteJson(file, value, { mode: 0o600 });
 }
 
 function mcpConfigSnippet(home) {
@@ -246,6 +244,38 @@ function isWritableHome(home) {
 
 // ---------- run ----------
 
+// 终态只有 idle/error；dispatched/running/waiting_permission/waiting_input/未知值都算未结束。
+const TERMINAL_STATUSES = new Set(["idle", "error"]);
+
+// 并发派发上限：本地登记中未结束的任务先按 ZCode 侧逐个刷新再计数
+// （刷新失败/异常按本地记录算，不阻断计数）；达到上限拒绝再派。
+async function enforceRunningLimit(home, config) {
+  const maxRunning = Number.parseInt(process.env.ZCODE_SUB_MAX_RUNNING ?? "4", 10) || 4;
+  let count = 0;
+  for (const [name, record] of Object.entries(tasks.loadTasks(home).tasks)) {
+    if (TERMINAL_STATUSES.has(record.lastStatus)) continue;
+    let status = record.lastStatus;
+    try {
+      const fresh = await api.getTask(config, record.taskId, record.workspacePath);
+      if (typeof fresh?.status === "string" && fresh.status !== status) {
+        status = fresh.status;
+        tasks.updateTask(home, name, { lastStatus: status });
+      }
+    } catch {
+      // 刷新失败（不可达/鉴权/任务已删）按本地记录算
+    }
+    if (!TERMINAL_STATUSES.has(status)) count += 1;
+  }
+  if (count >= maxRunning) {
+    const err = new Error(
+      `zcode_too_many_running: 已有 ${count} 个任务未结束（上限 ${maxRunning}）。先 wait/stop 收尾，或用环境变量 ZCODE_SUB_MAX_RUNNING 调整上限。`,
+    );
+    err.code = "zcode_too_many_running";
+    err.exitCode = 8;
+    throw err;
+  }
+}
+
 async function cmdRun(home, flags) {
   const taskText = flags._[0];
   const cwd = flags.cwd;
@@ -255,6 +285,7 @@ async function cmdRun(home, flags) {
   const name = typeof flags.name === "string" && flags.name ? flags.name : autoName();
   assertValidName(name);
   const config = requireConfig(home);
+  await enforceRunningLimit(home, config);
 
   // 先建 ZCode 对话，再登记本地；名字冲突时 ZCode 侧已存在，要如实告知。
   const { taskId } = await api.createTask(config, {
@@ -288,7 +319,8 @@ function wrappedPrompt(name, cwd, taskText) {
 function autoName() {
   const now = new Date();
   const pad = (value) => String(value).padStart(2, "0");
-  return `zsub-${now.getFullYear()}${pad(now.getMonth() + 1)}${pad(now.getDate())}-${pad(now.getHours())}${pad(now.getMinutes())}${pad(now.getSeconds())}`;
+  const ms = String(now.getMilliseconds()).padStart(3, "0");
+  return `zsub-${now.getFullYear()}${pad(now.getMonth() + 1)}${pad(now.getDate())}-${pad(now.getHours())}${pad(now.getMinutes())}${pad(now.getSeconds())}-${ms}`;
 }
 
 // ---------- send / resume / stop ----------
@@ -302,7 +334,7 @@ async function cmdSend(home, flags) {
   const task = requireTask(home, name);
   const config = requireConfig(home);
   const delivery = flags.steer ? "steer" : flags.queue ? "queue" : "auto";
-  const result = await api.sendMessage(config, task.taskId, message, delivery);
+  const result = await api.sendMessage(config, task.taskId, message, delivery, task.workspacePath);
   const commandId = result?.commandId ? `（commandId=${result.commandId}）` : "";
   process.stdout.write(`✓ 投递结果：${result?.delivery ?? "?"}${commandId}\n`);
 }
@@ -315,7 +347,7 @@ async function cmdResume(home, flags) {
   }
   const task = requireTask(home, name);
   const config = requireConfig(home);
-  const payload = await api.getTask(config, task.taskId);
+  const payload = await api.getTask(config, task.taskId, task.workspacePath);
   const status = payload.status;
   if (status === "running" || status === "waiting_permission" || status === "waiting_input") {
     const err = new Error(
@@ -329,7 +361,7 @@ async function cmdResume(home, flags) {
     // error 等其他状态：原样接续，让用户在对话里处理
     process.stdout.write(`任务 status=${status}，按接续处理\n`);
   }
-  await api.sendMessage(config, task.taskId, message, "auto");
+  await api.sendMessage(config, task.taskId, message, "auto", task.workspacePath);
   process.stdout.write("✓ 已接续对话（sent）\n");
 }
 
@@ -340,7 +372,7 @@ async function cmdStop(home, flags) {
   }
   const task = requireTask(home, name);
   const config = requireConfig(home);
-  await api.stopTask(config, task.taskId);
+  await api.stopTask(config, task.taskId, task.workspacePath);
   process.stdout.write("✓ 已请求停止\n");
 }
 
@@ -353,7 +385,7 @@ async function cmdResult(home, flags) {
   }
   const task = requireTask(home, name);
   const config = requireConfig(home);
-  const payload = await api.getTask(config, task.taskId);
+  const payload = await api.getTask(config, task.taskId, task.workspacePath);
   const status = payload.status;
   tasks.updateTask(home, name, { lastStatus: status });
 
@@ -386,6 +418,7 @@ async function cmdWait(home, flags) {
   const config = requireConfig(home);
   const timeoutSec = Number.parseInt(String(flags.timeout ?? "600"), 10) || 600;
   const deadline = Date.now() + timeoutSec * 1000;
+  let after = task.eventsSeq ?? 0;
 
   for (;;) {
     // 信箱优先：子代理主动消息不进事件流，也不必等长轮询
@@ -406,24 +439,25 @@ async function cmdWait(home, flags) {
       return;
     }
 
-    const payload = await api.getEvents(config, task.taskId, task.eventsSeq, Math.min(30_000, remainingMs));
-    if (payload?.error === "task_not_found") {
-      const err = new Error(`zcode_task_not_found: 任务 ${task.taskId} 不存在（可能已在 GUI 删除）。`);
-      err.code = "zcode_task_not_found";
-      err.exitCode = 4;
-      throw err;
-    }
+    const payload = await api.getEvents(config, task.taskId, after, Math.min(30_000, remainingMs), task.workspacePath);
     if (payload?.resync) {
-      const fresh = await api.getTask(config, task.taskId);
-      process.stdout.write(`⚠ 事件缓冲溢出，改查任务状态：${fresh.status}；完整过程见 ZCode GUI\n`);
+      const fresh = await api.getTask(config, task.taskId, task.workspacePath);
+      process.stdout.write(`⚠ 事件缓冲溢出，改用 zcode-sub result ${name} 轮询（完整过程见 ZCode GUI）\n`);
       tasks.updateTask(home, name, { lastStatus: fresh.status });
       return;
     }
     const events = Array.isArray(payload?.events) ? payload.events : [];
+    if (events.length === 0 && Number.isFinite(payload?.nextSeq) && payload.nextSeq < after) {
+      // ZCode 重启会清空事件缓冲、seq 归零：游标跟着回退，继续等新事件（不算新事件、不退出）
+      tasks.updateTask(home, name, { eventsSeq: payload.nextSeq });
+      process.stdout.write(`⚠ 事件序列已重置（ZCode 可能重启）：${after}→${payload.nextSeq}，继续等待新事件\n`);
+      after = payload.nextSeq;
+      continue;
+    }
     if (events.length > 0) {
       const patch = { eventsSeq: payload.nextSeq };
       for (const event of events) {
-        process.stdout.write(`[${event.type}] ${event.text ?? event.error ?? event.summary ?? ""}\n`);
+        writeEventLine(event);
         if (event.type === "permission.requested") {
           process.stdout.write("⏳ 请在 ZCode GUI 处理该权限请求\n");
         }
@@ -435,6 +469,21 @@ async function cmdWait(home, flags) {
     }
     // 空页 → 回到信箱检查继续等
   }
+}
+
+// 事件正文超过 2000 字符只打印前 2000 字符（全文用 result / ZCode GUI 查看）；
+// reply 信箱行不截断（子代理对父代理的直接消息保持全文）。
+const EVENT_TEXT_LIMIT = 2000;
+
+function writeEventLine(event) {
+  const raw = event.text ?? event.error ?? event.summary ?? "";
+  const text = typeof raw === "string" ? raw : String(raw);
+  if (text.length <= EVENT_TEXT_LIMIT) {
+    process.stdout.write(`[${event.type}] ${text}\n`);
+    return;
+  }
+  process.stdout.write(`[${event.type}] ${text.slice(0, EVENT_TEXT_LIMIT)}\n`);
+  process.stdout.write(`…（共 ${text.length} 字符，全文用 result 或 ZCode GUI 查看）\n`);
 }
 
 // ---------- list / mcp ----------
@@ -450,10 +499,18 @@ function cmdList(home, flags) {
     process.stdout.write("（还没有任务；用 zcode-sub run 派发）\n");
     return;
   }
-  const rows = [];
+  const rows = [["name", "taskId(前8位)", "lastStatus", "createdAt", "workspacePath"].join("\t")];
   for (const name of names) {
     const task = tasks.getTask(home, name);
-    rows.push([name, String(task.taskId ?? "").slice(0, 8), task.lastStatus ?? "?", task.workspacePath ?? ""].join("\t"));
+    rows.push(
+      [
+        name,
+        String(task.taskId ?? "").slice(0, 8),
+        task.lastStatus ?? "?",
+        task.createdAt ? new Date(task.createdAt).toISOString() : "",
+        task.workspacePath ?? "",
+      ].join("\t"),
+    );
   }
   process.stdout.write(`${rows.join("\n")}\n`);
 }

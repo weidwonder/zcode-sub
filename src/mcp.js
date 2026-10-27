@@ -1,4 +1,7 @@
 import { createInterface } from "node:readline";
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
+import { dirname, join } from "node:path";
 import { getHome } from "./home.js";
 import { appendReplyLine } from "./mailbox.js";
 import { getTask } from "./tasks.js";
@@ -10,6 +13,18 @@ import { getTask } from "./tasks.js";
 // 读它），不再经过桥接 daemon。stdin/stdout 专用于协议；诊断写 stderr。
 
 const PROTOCOL_VERSION = "2024-11-05";
+
+// 版本唯一出处是 package.json（与 CHANGELOG / Skill metadata.version 同步）
+function packageVersion() {
+  try {
+    const manifest = JSON.parse(
+      readFileSync(join(dirname(fileURLToPath(import.meta.url)), "..", "package.json"), "utf8"),
+    );
+    return typeof manifest.version === "string" ? manifest.version : "0.0.0";
+  } catch {
+    return "0.0.0";
+  }
+}
 
 export function runMcpServer({ stdin = process.stdin, stdout = process.stdout } = {}) {
   // 座位/服务环境的 HOME 常被重定向，home 定位只认 userInfo().homedir（见 home.js）
@@ -49,7 +64,7 @@ async function handleRequest(message, writer, { home }) {
       result: {
         protocolVersion: PROTOCOL_VERSION,
         capabilities: { tools: {} },
-        serverInfo: { name: "zcode-sub", version: "0.1.0" },
+        serverInfo: { name: "zcode-sub", version: packageVersion() },
       },
     });
     return;

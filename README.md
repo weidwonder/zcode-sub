@@ -44,16 +44,19 @@ npm link            # 或把 bin/zcode-sub.js 加入 PATH；本仓库不发布 n
 | `zcode-sub list [--json]` | 本地任务表（name/taskId/状态） |
 | `zcode-sub mcp` | stdio MCP server（`reply_to_parent`），由 ZCode 拉起 |
 
-退出码：`2` 连不上本机任务 API；`3` 工作区未在 ZCode 打开（409）；`4` 投递失败/任务已删除/运行中不能 resume；`5` token/Host 校验失败；`7` 任务名非法或重名。任务名仅 `[A-Za-z0-9._-]+`。
+退出码：`2` 连不上本机任务 API 或 wait 超时；`3` 工作区未在 ZCode 打开（含远端工作区，409）；`4` 按 taskId 的请求失败（含任务被删）或运行中 resume 被拒；`5` token/Host 校验失败；`7` 任务名非法或重名；`8` 未结束任务数达上限（默认 4，`ZCODE_SUB_MAX_RUNNING` 调整）。任务名仅 `[A-Za-z0-9._-]+`。完整错误码闭集与事件类型清单以 spec §3 为准（`docs/spec/2026-10-27-zcode-sub-bridge-eng-spec.md`）。
+
+诊断：`ZCODE_SUB_DEBUG=1` 时 API 请求/响应摘要追加 `~/.zcode-sub/debug.log`（不含 token 与 prompt 正文）。
 
 ## 重要边界
 
-- **多任务并行**：每次 `run` 在 ZCode 新建一个对话，name→taskId 映射存本地；互不干扰。
+- **多任务并行有上限**：每次 `run` 在 ZCode 新建一个对话，name→taskId 映射存本地；同时未结束（运行/等待/派发中）的任务数上限默认 4，`ZCODE_SUB_MAX_RUNNING` 可调，超限报 `zcode_too_many_running`。
 - **运行中补充消息**：`send` 默认 `auto`（与 GUI 运行中发送的默认行为一致：排队或引导）；`--steer`/`--queue` 显式指定。返回的 `sent`/`queued`/`steered` 与 commandId 会打印。
 - **权限请求不经本工具**：wait 收到 `permission.requested` 会提示去 ZCode GUI 处理（契约 v2 本版不通过 API 批权限）。
-- **事件缓冲溢出**：上游每任务事件有界缓冲，溢出时 wait 会收到 `resync` 提示并改查任务状态；完整过程以 GUI 为准。
-- **终态口径**：`result` 以 `GET /api/tasks/:id` 的 status 为准（idle/error 即终态，lastAssistantText 为最后回复）。
-- 本工具不写 ZCode 的其他数据文件；开关文件仅 setup 显式写入。
+- **事件缓冲与重启**：上游每任务事件有界缓冲（500 条），溢出时 wait 收到 `resync` 提示改用 result 轮询；ZCode 重启后事件缓冲清空、序号可能回退，wait 会重置游标继续等待。
+- **终态口径**：`result` 以 `GET /api/tasks/:id` 的 status 为准（idle/error 即终态，lastAssistantText 为最后回复；停止后完成事件文本可为空）。
+- **副作用安全**：创建/写入类 POST 失败不自动重试（防重复建任务），报错时会提示先用 `list`/GUI 核对。
+- 本工具不写 ZCode 的其他数据文件；开关文件仅 setup 显式写入（已存在时以它为准，`--api-port` 冲突报错不覆盖）。
 
 ## 开发
 
