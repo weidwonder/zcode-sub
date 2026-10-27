@@ -5,8 +5,8 @@ import { dirname, join } from "node:path";
 import { getHome, assertValidName } from "./home.js";
 import { loadConfig, createInitialConfig, saveConfig, updateConfig } from "./config.js";
 import { postIngress, queryStatus } from "./ingress.js";
-import { appendMailbox } from "./mailbox.js";
-import { loadTasks, upsertTask } from "./tasks.js";
+import { appendMailbox, readMailbox, readCursor, writeCursor } from "./mailbox.js";
+import { loadTasks, upsertTask, getTask } from "./tasks.js";
 import { ensureDaemon } from "./ensure.js";
 
 // CLI 分发。退出码表见 spec §3：2 unreachable / 3 busy / 4 send_rejected /
@@ -45,6 +45,16 @@ export async function runCli(argv) {
       return cmdRun(home, parseFlags(rest));
     case "list":
       return cmdList(home, parseFlags(rest));
+    case "send":
+      return cmdSend(home, parseFlags(rest));
+    case "wait":
+      return cmdWait(home, parseFlags(rest));
+    case "result":
+      return cmdResult(home, parseFlags(rest));
+    case "resume":
+      return cmdResume(home, parseFlags(rest));
+    case "stop":
+      return cmdStop(home, parseFlags(rest));
     case "daemon":
       return cmdDaemon(home);
     default:
@@ -321,7 +331,7 @@ async function cmdRun(home, flags) {
 
   upsertTask(home, name, { cwd, isCurrent: true, lastStatus: "dispatched" });
   appendMailbox(home, name, {
-    kind: "notice",
+    kind: "dispatch",
     text: `任务已派发（${new Date().toISOString()}）`,
   });
 
@@ -362,6 +372,175 @@ function cmdList(home, flags) {
     );
   }
   process.stdout.write(`${rows.join("\n")}\n`);
+}
+
+// ---------- send / wait / result / resume / stop ----------
+
+// 任务运行中上游会拒绝普通正文（私聊无 steer/queue），拒收文案如实转达。
+const TASK_RUNNING_PATTERN = /当前任务正在运行|still running/iu;
+
+function requireTask(home, name) {
+  assertValidName(name);
+  const task = getTask(home, name);
+  if (!task) {
+    const err = new Error(`zcode_task_not_found: 没有任务 "${name}"。zcode-sub list 查看。`);
+    err.code = "zcode_task_not_found";
+    err.exitCode = 1;
+    throw err;
+  }
+  return task;
+}
+
+async function deliverText(home, config, name, text) {
+  const result = await postIngress(config, text);
+  const joined = result.replies.join("\n");
+  if (TASK_RUNNING_PATTERN.test(joined)) {
+    const err = new Error(
+      `zcode_send_rejected: ZCode 拒收了这条消息（任务运行中，私聊无补充输入通道）。ZCode 原话：\n${joined}`,
+    );
+    err.code = "zcode_send_rejected";
+    err.exitCode = 4;
+    throw err;
+  }
+  appendMailbox(home, name, {
+    kind: "dispatch",
+    text: `已投递补充输入：${text.slice(0, 80)}${text.length > 80 ? "…" : ""}`,
+  });
+  upsertTask(home, name, { lastActivityAt: Date.now() });
+  return result;
+}
+
+async function cmdSend(home, flags) {
+  const config = requireConfig(home);
+  const name = flags._[0];
+  const message = flags._[1];
+  if (!name || message === undefined) {
+    const err = new Error('用法：zcode-sub send <name> "<消息>"');
+    err.exitCode = 1;
+    throw err;
+  }
+  requireTask(home, name);
+  await ensureDaemon(home);
+  await deliverText(home, config, name, message);
+  process.stdout.write("✓ 已投递（任务已结束则在原会话续聊）\n");
+}
+
+async function cmdResume(home, flags) {
+  const config = requireConfig(home);
+  const name = flags._[0];
+  const message = flags._[1];
+  if (!name || message === undefined) {
+    const err = new Error('用法：zcode-sub resume <name> "<继续文本>"');
+    err.exitCode = 1;
+    throw err;
+  }
+  const task = requireTask(home, name);
+  if (!task.isCurrent) {
+    const err = new Error(
+      `zcode_not_current: "${name}" 不再是 bot 会话当前任务（后续 run 已重置会话），无法在原会话续聊。`,
+    );
+    err.code = "zcode_not_current";
+    err.exitCode = 1;
+    throw err;
+  }
+  await ensureDaemon(home);
+  await deliverText(home, config, name, message);
+  process.stdout.write("✓ 已在原会话续聊\n");
+}
+
+async function cmdStop(home, flags) {
+  const config = requireConfig(home);
+  const name = flags._[0];
+  if (!name) {
+    const err = new Error("用法：zcode-sub stop <name>");
+    err.exitCode = 1;
+    throw err;
+  }
+  requireTask(home, name);
+  await ensureDaemon(home);
+  const result = await postIngress(config, "/stop");
+  const text = result.replies.join("\n");
+  appendMailbox(home, name, { kind: "status", text });
+  upsertTask(home, name, { lastStatus: "stopped", lastActivityAt: Date.now() });
+  process.stdout.write(`${text || "（无回执）"}\n`);
+}
+
+async function cmdWait(home, flags) {
+  const name = flags._[0];
+  if (!name) {
+    const err = new Error("用法：zcode-sub wait <name> [--timeout 秒]");
+    err.exitCode = 1;
+    throw err;
+  }
+  requireTask(home, name);
+  const timeoutMs = (Number.parseInt(String(flags.timeout ?? "600"), 10) || 600) * 1000;
+  const cursor = readCursor(home, name);
+  const deadline = Date.now() + timeoutMs;
+
+  while (Date.now() < deadline) {
+    const fresh = readMailbox(home, name).filter((entry) => entry.seq > cursor);
+    if (fresh.length > 0) {
+      writeCursor(home, name, Math.max(...fresh.map((entry) => entry.seq)));
+      for (const entry of fresh) {
+        process.stdout.write(`[${entry.kind}] ${entry.text}\n`);
+      }
+      return;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 200));
+  }
+  process.stdout.write("TIMEOUT\n");
+  process.exitCode = 2;
+}
+
+async function cmdResult(home, flags) {
+  const config = requireConfig(home);
+  const name = flags._[0];
+  if (!name) {
+    const err = new Error("用法：zcode-sub result <name>");
+    err.exitCode = 1;
+    throw err;
+  }
+  requireTask(home, name);
+  await ensureDaemon(home);
+
+  const status = await queryStatus(config);
+  appendMailbox(home, name, { kind: "status", text: status.raw });
+  upsertTask(home, name, { lastStatus: status.state, lastActivityAt: Date.now() });
+
+  if (status.state === "running" || status.state === "unknown") {
+    const recent = readMailbox(home, name).slice(-3);
+    process.stdout.write(
+      status.state === "running"
+        ? `还在跑（最近活动：\n${recent.map((entry) => `[${entry.kind}] ${entry.text.slice(0, 120)}`).join("\n")}\n）\n`
+        : `无法判定状态。/status 原文：\n${status.raw}\n`,
+    );
+    return;
+  }
+
+  // 最终回复 = 最近一次 dispatch 之后的 outbound/reply 正文
+  const entries = readMailbox(home, name);
+  let lastDispatchIndex = -1;
+  for (let index = entries.length - 1; index >= 0; index -= 1) {
+    if (entries[index].kind === "dispatch") {
+      lastDispatchIndex = index;
+      break;
+    }
+  }
+  const finalEntries = entries
+    .slice(lastDispatchIndex + 1)
+    .filter((entry) => entry.kind === "outbound" || entry.kind === "reply");
+  const stateLine = status.raw.split("\n").find((line) => line.includes("状态:") || line.includes("State:"));
+
+  process.stdout.write(`状态：${stateLine?.trim() ?? status.state}\n`);
+  if (finalEntries.length === 0) {
+    process.stdout.write("（终态但没有捕获到回复正文——用 zcode-sub wait <name> 看历史消息，或直接在 ZCode GUI 查看）\n");
+    return;
+  }
+  process.stdout.write("----- 最终回复 -----\n");
+  for (const entry of finalEntries) {
+    process.stdout.write(`${entry.text}\n`);
+    if (entry.kind === "reply") process.stdout.write("\n");
+  }
 }
 
 // ---------- daemon ----------
