@@ -70,15 +70,15 @@ authority_refs:
 | 强制升级门 maybeBlockStartupForForceUpdate | `packages/desktop/src/main/index.ts:2521-2532` | production 产物受其约束，报告评估 | 本次新补 `dependencies/ZCode/更新与强制升级.md`（同上） |
 | SQLite 迁移账本（schema_migration / tasks_schema_migration / project-storage schema_migration） | `packages/shared/src/sqlite-migrations/runner.ts:62-100` | 备份脚本在线备份这些库；报告结论 | 本次新补 `dependencies/ZCode/数据目录与迁移.md`（同上） |
 | 凭据加密 credentialCipherProvider（本地派生密钥，与签名无关） | `packages/services/src/credential/providers/credentialCipherProvider.ts:24-38` | 报告论证登录态保留 | 本次新补 `dependencies/ZCode/凭据与登录态.md`（同上） |
-| pnpm workspace 构建（install → prepare:runtime-assets → build → electron-builder） | `packages/desktop/scripts/bundle.mjs:700-745` | build-desktop.sh 编排调用 | 本次新补 `cards/zcode/构建身份与打包.md` |
-| `~/.zcode` 用户数据布局 | `packages/services/src/paths.ts:45-58` | backup 脚本的范围依据 | 本次新补 `cards/zcode/数据目录与迁移.md` |
+
+（「pnpm workspace 构建链」与「~/.zcode 数据布局」两个视角已并入上表「构建身份与打包」「数据目录与迁移」两行的同名域卡。）
 
 ### 1.1 功能需求（MUST 编号）
 
 | 编号 | 需求 |
 |---|---|
-| FR-001 | `patch/backup-zcode-data.sh <备份目录>`：对 `~/.zcode` 下所有 SQLite 库用 `sqlite3 <db> ".backup <dst>"` 在线备份（含 WAL 状态），复制其余配置/数据文件（范围见 §4.1），生成 `manifest.json`（路径、字节数、sha256）与 `sha256sums.txt`；不修改源数据；可重复执行（目标已存在则中止并提示）；支持 `--dry-run`。 |
-| FR-002 | `patch/build-desktop.sh <ZCode源码目录>`：确保 Node 24.14.0（下载解压到 `/Users/weidwonder/projects/.toolchains/node-v24.14.0`，已存在直接用；不改全局）与 pnpm 10.33.2 可用（缺失或版本不符时自动安装到 `.toolchains/pnpm-10.33.2`，`--prefix` 隔离不动全局，失败才报错）；`pnpm install`（幂等）；以 `ZCODE_ENV=production`、`ZCODE_AUTO_UPDATE=0`、按 `--identity preview|production`（默认 preview）设定身份变量；执行 `pnpm bundle:desktop`（mac arm64）；结束时打印产物路径（.app unpacked 目录与 .dmg/.zip）。支持 `--dry-run`（只打印将执行的命令不执行）与 `--skip-install`。 |
+| FR-001 | `patch/backup-zcode-data.sh <备份目录>`：对 `~/.zcode` 下所有 SQLite 库用 `sqlite3 <db> ".backup <dst>"` 在线备份（含 WAL 状态），复制其余配置/数据文件（范围见 §4.1），生成 `manifest.json`（路径、字节数、sha256）与 `sha256sums.txt`；不修改源数据；可重复执行（目标已存在则中止并提示）；支持 `--dry-run` 与 `--minimal`。 |
+| FR-002 | `patch/build-desktop.sh <ZCode源码目录>`：确保 Node 24.14.0（下载解压到 `/Users/weidwonder/projects/.toolchains/node-v24.14.0`，已存在直接用；不改全局）与 pnpm 10.33.2 可用（缺失或版本不符时自动安装到 `.toolchains/pnpm-10.33.2`，`--prefix` 隔离不动全局，失败才报错）；`pnpm install`（幂等）；以 `ZCODE_ENV=production`、`ZCODE_AUTO_UPDATE=0`、按 `--identity preview|production`（默认 preview）设定身份变量；缓存默认重定向到 `.toolchains/`（pnpm store / npm cache / node-gyp / XDG / electron 与 electron-builder cache，用户已显式设置的不覆盖）；xcode-select 指向残缺 Xcode 而 CommandLineTools 完整时自动改用 CLT 的 `DEVELOPER_DIR`/`SDKROOT` 并告警；执行 `pnpm bundle:desktop`（mac arm64），bundle 整体失败但本次已产出 .app/.zip（受限沙箱 hdiutil 必败致 DMG 阶段失败）时打印产物并视为成功；`--no-dmg` 显式走 zip 通路（复刻 prepare→build→electron-builder --mac zip + 体积审计，跳过 bundle.mjs 的 DMG 与收尾机械校验）。结束时打印产物路径（.app unpacked 目录与 .dmg/.zip）。支持 `--dry-run`（只打印将执行的命令不执行）、`--skip-install`、`--no-dmg`。 |
 | FR-003 | `patch/install-desktop.sh <产物 .app 或 .dmg>`：从产物 Info.plist 读 CFBundleIdentifier/CFBundleName 决定安装目标（`dev.zcode.app` → `/Applications/ZCode.app`；`dev.zcode.app.preview` → `/Applications/ZCode Preview.app`）；检测目标 app 是否在运行（pgrep，检测手段不可用时警告并要求 `--yes` 确认）；把现有 app `mv` 到 `/Users/weidwonder/projects/zcode-backups/apps/<Name>-<版本>-<时间戳>.app`；`ditto` 拷入新包；`xattr -dr com.apple.quarantine`；默认 ad-hoc 重签（`--no-sign` 跳过）。支持 `--dry-run`。 |
 | FR-004 | `patch/rollback-desktop.sh`：列出 `/Users/weidwonder/projects/zcode-backups/apps/` 的可回滚快照；无参数恢复最近一份（或 `--from <快照路径>` 指定）；同样检测运行、mv 当前包到备份区（带 `rolledback-from-` 前缀）、mv 快照回 `/Applications`。支持 `--dry-run`。 |
 | FR-005 | `patch/sync-upstream.sh <ZCode源码目录>`：`git fetch origin`；从 `origin/main` 创建 `local/patched-<短SHA>` 分支（已存在则中止）；补丁提交**只以 `patch/series` 显式列出的净提交为准**（一行一个提交 SHA，`#` 注释行忽略，`! <命令>` 行是 pick 后的自定义校验；series 由派发者在补丁评审通过后固化——上游分支含 v1 引入+revert 对冲提交对，自动提取会把对冲对一起 pick，故不做自动取分支）；series 未固化时仅建分支并打警告，不 cherry-pick；冲突即停（打印冲突文件清单，保留现场，退出码 4）；全部通过后跑 `pnpm typecheck` 与 `pnpm lint`（Node 24.14.0 PATH 前置）；结尾打印下一步（build-desktop.sh）。git 命令一律带 `-c safe.directory='*'`。支持 `--dry-run`（打印计划：新分支名、将 pick 的提交清单、将跑的校验命令，不执行写操作）。 |
@@ -108,7 +108,7 @@ authority_refs:
   "sourceRoot": "/Users/weidwonder/.zcode",
   "zcodeAppVersion": "3.16.3",
   "files": [
-    {"path": "cli/db/db.sqlite", "bytes": 984227840, "sha256": "…",
+    {"path": "cli/db/db.sqlite", "bytes": 984227840, "sha256": "…",  // bytes 为示意值，实际随使用增长
      "method": "sqlite-backup", "sourceMtime": "2026-10-27T20:24:00+08:00"}
   ],
   "skipped": [
@@ -125,8 +125,8 @@ authority_refs:
 
 | 接口 | 入参 | 出参 / 退出码 | 调用方 |
 |---|---|---|---|
-| backup-zcode-data.sh | `[<备份目录>]` `--dry-run` | 退出码 0=成功；1=环境错误；2=目标已存在。stdout 打印备份目录与文件数 | 用户 / 派发者 |
-| build-desktop.sh | `<ZCode源码目录>` `--identity preview\|production` `--skip-install` `--dry-run` | 0=成功并打印产物路径；1=失败（依赖缺失、构建失败）；dry-run 只打印命令 | 用户 |
+| backup-zcode-data.sh | `[<备份目录>]` `--minimal` `--dry-run` | 退出码 0=成功；1=环境错误；2=目标已存在。stdout 打印备份目录与文件数 | 用户 / 派发者 |
+| build-desktop.sh | `<ZCode源码目录>` `--identity preview\|production` `--skip-install` `--no-dmg` `--dry-run` | 0=成功并打印产物路径；1=失败（依赖缺失、构建失败）；dry-run 只打印命令 | 用户 |
 | install-desktop.sh | `<产物路径 .app/.dmg>` `--no-sign` `--yes` `--dry-run` | 0=安装完成；1=错误；3=目标 app 运行中（不杀，提示退出后重试） | 用户 |
 | rollback-desktop.sh | `[--from <快照>]` `--yes` `--dry-run` `--list` | 0=回滚完成；1=错误；3=运行中；`--list` 只列快照 | 用户 |
 | sync-upstream.sh | `<ZCode源码目录>` `--dry-run` | 0=同步+校验通过；1=环境错误；4=cherry-pick 冲突（现场保留）；5=typecheck/lint 失败 | 派发者 |
@@ -144,7 +144,7 @@ authority_refs:
 
 | 路径（相对 `~/.zcode`） | 方式 | 理由 |
 |---|---|---|
-| `cli/db/db.sqlite` | sqlite3 在线备份 | 会话库（984 MB，WAL 活跃，文件复制会拿到撕裂快照） |
+| `cli/db/db.sqlite` | sqlite3 在线备份 | 会话库（约 1 GB 且随使用增长，WAL 活跃，文件复制会拿到撕裂快照） |
 | `v2/tasks-index.sqlite` | sqlite3 在线备份 | 任务索引库（WAL 活跃） |
 | `v2/*.json`、`v2/certs/`、`v2/agent-config/`、`v2/runtime/`、`v2/gen-ui-state/`、`v2/onboarding-record.json` | 递归复制 | 凭据/设置/bot 配置等全部结构化数据 |
 | `skills/`、`cli/agents/` | 递归复制 | 用户安装的技能与 agent 定义（skills 65 项，体积小价值高） |
@@ -164,7 +164,7 @@ authority_refs:
    - `--identity preview`（默认）：`ZCODE_ENV=production ZCODE_PREVIEW_IDENTITY=1`
    - `--identity production`：`ZCODE_ENV=production ZCODE_PREVIEW_IDENTITY=0`（显式置 0 与不设等价——源码 isPreviewIdentityRequested 对 `""`/`"0"` 同判 false——并可防外部环境泄漏，与 `ZCODE_AUTO_UPDATE=0` 同理）
 6. 常量：`ZCODE_AUTO_UPDATE=0`（`scripts/build-time-config.mjs:44-47`：不设即关，显式置 0 防私有默认值干扰）、`ELECTRON_MIRROR` 未设时置 npmmirror（bundle.mjs 默认即此，显式置出于确定性）。
-7. `pnpm bundle:desktop -- --os mac --arch arm64`（bundle.mjs 内部完成 prepare:runtime-assets → build → electron-builder → 产物校验 → 体积审计）。
+7. `pnpm bundle:desktop -- --os mac --arch arm64`（bundle.mjs 内部完成 prepare:runtime-assets → build → electron-builder → 产物校验 → 体积审计）。失败兜底：bundle 整体失败但 dist 下本次已产出 .app/.zip（典型为受限沙箱 hdiutil ENXIO 致 DMG 阶段失败）时打印产物并视为成功；`--no-dmg` 时改为 zip 通路——在 `packages/desktop` 目录复刻 prepare:runtime-assets → build → `electron-builder --config electron-builder.config.js --mac zip --arm64` → 对 zip 跑 `scripts/audit-bundle-size.mjs`，跳过 bundle.mjs 的收尾机械校验（打印警告）。
 8. 成功后定位并打印：`packages/desktop/dist/mac-arm64/ZCode[ Preview].app`（unpacked，可直接交给 install-desktop.sh）与 dist 下最新 `.dmg`、`.zip`。
 
 ### 4.3 install-desktop.sh / rollback-desktop.sh
@@ -220,6 +220,7 @@ authority_refs:
 | `--yes`（install/rollback） | flag | 否 | 关 | 跳过运行检测失败时的交互确认 |
 | `--from`（rollback） | 路径 | 否 | 最新快照 | 指定恢复源 |
 | `--skip-install`（build） | flag | 否 | 关 | 跳过 pnpm install |
+| `--no-dmg`（build） | flag | 否 | 关 | zip 通路：跳过 DMG 与 bundle.mjs 收尾机械校验（受限沙箱 hdiutil 必败时用） |
 | 备份根目录 | 环境变量 `ZCODE_BACKUP_ROOT` | 否 | `/Users/weidwonder/projects/zcode-backups` | 所有备份/旧 app 快照的根 |
 
 ## 7. 可观测性
