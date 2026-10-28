@@ -1,0 +1,16 @@
+{
+  "name": "zcode-sub",
+  "version": "0.2.0",
+  "description": "经 ZCode 本机任务 API 把 ZCode 桌面版当 Claude Code 子代理的桥接 CLI：多对话并行、运行中补消息、事件与最终回复",
+  "type": "module",
+  "private": true,
+  "bin": {
+    "zcode-sub": "bin/zcode-sub.js"
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "test": "node --test test/*.test.js"
+  }
+}
