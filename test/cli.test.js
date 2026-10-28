@@ -551,14 +551,45 @@ test("send：空闲 sent；运行中 auto→queued、--steer→steered、--queue
   const steered = await runCli(["send", "send-1", "插队的话", "--steer"]);
   assert.equal(steered.status, 0, steered.stderr);
   assert.match(steered.stdout, /投递结果：steered/u);
-  // 注：fake 端点没有控制方法，无法模拟「A 侧真打断不可用 → 降级为 queued」的降级场景；
-  // 该场景下 CLI 输出按应答如实显示（透传实现，不做二次加工）——上面的 steered/queued
-  // 断言即应答原文，降级语义的覆盖在 A 侧端点测试。
+  assert.match(steered.stdout, /ℹ steered 仅为受理引导/u);
+  assert.match(steered.stdout, /以事件流为准/u);
+  // steer 应答=受理；注入结果的事件流断言见下方 steer 用例
 
   const forced = await runCli(["send", "send-1", "强制排队", "--queue"]);
   assert.equal(forced.status, 0, forced.stderr);
   assert.match(forced.stdout, /投递结果：queued/u);
   settle("send-1");
+});
+
+test("wait 打印 steer 注入结果（injected 与 fellBack）；steer 事件不改 lastStatus", async () => {
+  const { taskId } = await dispatchTask("steer-1");
+  fake.createTaskAlreadyRunning(taskId);
+
+  // 1) send --steer：应答=受理，附受理提示行
+  const steered = await runCli(["send", "steer-1", "插队的话", "--steer"]);
+  assert.equal(steered.status, 0, steered.stderr);
+  assert.match(steered.stdout, /投递结果：steered/u);
+  assert.match(steered.stdout, /ℹ steered 仅为受理引导；注入结果以事件流为准（wait 可见 steer.injected \/ steer.fellBack）/u);
+
+  // 2) 注入成功：wait 打印投影出的 input.steered 与 steer.injected
+  fake.settleSteer(taskId, "injected");
+  const injected = await runCli(["wait", "steer-1", "--timeout", "5"]);
+  assert.equal(injected.status, 0, injected.stderr);
+  assert.match(injected.stdout, /\[input\.steered\] 已受理引导（commandId=cmd-\d+）；注入结果以事件流为准/u);
+  assert.match(injected.stdout, /\[steer\.injected\] 引导已注入当前轮（打断生效）/u);
+
+  // 3) 降级/拒绝：wait 打印 steer.fellBack 并带原因
+  const again = await runCli(["send", "steer-1", "再插一句", "--steer"]);
+  assert.equal(again.status, 0, again.stderr);
+  assert.match(again.stdout, /投递结果：steered/u);
+  fake.settleSteer(taskId, "fellBack", "turn_ended");
+  const fellBack = await runCli(["wait", "steer-1", "--timeout", "5"]);
+  assert.equal(fellBack.status, 0, fellBack.stderr);
+  assert.match(fellBack.stdout, /\[steer\.fellBack\] 引导被降级\/拒绝，原因：turn_ended——消息将按排队处理或需重发/u);
+
+  // 4) 三种 steer 事件只打印，不参与 lastStatus 推导（终态仍只认 turn.completed/turn.failed）
+  assert.equal(loadTasks(home).tasks["steer-1"].lastStatus, "dispatched");
+  settle("steer-1");
 });
 
 test("resume：空闲接续 sent；运行中拒绝（exit 4 busy_for_resume）", async () => {

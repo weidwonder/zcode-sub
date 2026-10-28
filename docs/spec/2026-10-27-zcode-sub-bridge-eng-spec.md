@@ -21,7 +21,7 @@ authority_refs:
 - **端到端场景**：
   1. `zcode-sub run "<任务>" --cwd <工作区>`：CLI POST `/api/tasks` 在该工作区新建对话并发首条 prompt → stdout 一行 JSON（name/taskId）；ZCode GUI 出现新对话开始执行。
   2. Claude Code 后台 `zcode-sub wait <name>`：长轮询 `/events`——出现 `assistant.message`/`turn.completed`/`turn.failed`/`permission.requested` 或本地信箱 reply_to_parent 新行即打印并退出；`permission.requested` 提示去 GUI 处理。
-  3. 运行中 `zcode-sub send <name> "<补充>"`：POST `/messages`，delivery=auto（GUI 默认排队/引导语义）→ 打印 `queued`/`steered`。
+  3. 运行中 `zcode-sub send <name> "<补充>"`：POST `/messages`，delivery=auto（运行中的去向由会话 follow-up mode 决定，GUI 默认排队；要即时打断用 `--steer`）→ 打印应答 `delivery`+commandId；`--steer` 的应答 `steered` 仅为受理，注入结果以事件流为准（`input.steered`→`steer.injected`/`steer.fellBack`）。
   4. `zcode-sub result <name>`：GET 任务 → running 明确说在跑；终态打印 status + lastAssistantText。
   5. 异常：token 不符 401 / Host 不符 403 → `zcode_unauthorized`；workspace 未在 ZCode 打开 → 409 `zcode_workspace_not_open`。
 - **核心流程图**：
@@ -40,7 +40,7 @@ authority_refs:
   | `run` | POST /api/tasks 201 | 登记映射 | stdout 一行 JSON |
   | `run` | 409 workspace_not_open | 报错 | exit 3 + 提示先在 ZCode 打开工作区 |
   | `run` | name 已存在 | 拒绝 | exit 7（换名） |
-  | `send`（运行中） | delivery=auto（默认） | POST messages | 打印 queued/steered + commandId |
+  | `send`（运行中） | delivery=auto（默认，去向由会话 follow-up mode 决定） | POST messages | 打印 queued/steered + commandId（steer 应答=受理，结果以 steer.injected / steer.fellBack 事件为准） |
   | `send`/`resume`（空闲） | — | POST messages | 打印 sent（即接续上一轮对话） |
   | `resume`（running/waiting_*） | — | 拒绝 | exit 4，提示运行中补充用 send |
   | `wait` | events 有新事件或信箱有新行 | 打印并退出 | exit 0 |
@@ -57,7 +57,7 @@ authority_refs:
   | 既有模块 / 机制 | 从哪知道它的 | 本次可能怎么碰到 | 卡片补了吗 |
   |---|---|---|---|
   | ZCode 本机任务 API（契约 v2） | 派发任务书（A 实现中） | 全部命令的传输层 | v2 契约非源码事实，登记在本 spec §3；A 合入后补卡 |
-  | GUI busy 输入 delivery 语义（startNow/queue/guide；guide 最终 steer 或回退 queue 由命令层裁决） | `packages/ui/src/v4/ConversationComposer.tsx:224-225,1320-1325` | send `--steer/--queue/auto` 的语义对齐 | 已补 `dependencies/ZCode/bots-webhook.md`（会话语义节） |
+  | GUI busy 输入 delivery 语义（startNow/queue/guide；guide 最终 steer 或回退 queue 由命令层裁决；不带 requestedDelivery 时按会话 follow-up mode 裁决，默认 queue） | `packages/ui/src/v4/ConversationComposer.tsx:224-225,1320-1325`、`packages/ui/src/v4/composer/followupModeSettings.ts:8` | send `--steer/--queue/auto` 的语义对齐 | 已补 `dependencies/ZCode/bots-webhook.md`（会话语义节） |
   | ZCode 开关文件与应用配置目录 | `packages/services/src/paths.ts:37-58` + 契约 v2 第 1 条 | setup 写 `local-task-api.json` | 同上 |
   | MCP stdio 配置（command/args/env） | `apps/zcode-cli/docs/usage/07-mcp.md`、`packages/shared/src/mcp.ts:31-35` | `zcode-sub mcp` 配进 ZCode | 同上 |
   | dwc-sub（体验参照，只读） | `dwc-sub --help` | 命令名与输出风格 | 非代码依赖 |
@@ -69,14 +69,14 @@ authority_refs:
 | FR-001 | `zcode-sub setup`：健康检查 `GET /health`（校验 `api=="zcode-local-task-api"`、`version==2`）；开关文件 `<dataBaseDir>/.zcode/v2/local-task-api.json` 不存在或无 token 时生成 token（≥32 字节随机）以 0600 写入 `{"enabled":true,"port":47821,"token":...}` 并提示需重启 ZCode；已存在且 enabled 时读回 token/port 存桥接 config；打印 MCP 配置步骤与授权提示（状态目录/ZCode 配置目录不可写时提示 `dwc grant <目录>`，2026-10-27 起两者均已授权，提示按实测可写性输出） |
 | FR-002 | 状态层：`config.json` v2 `{apiPort, token}`；任务登记为每任务一分片 `tasks/<name>.json`（`{taskId,workspacePath,createdAt,lastStatus,eventsSeq,clientRequestId?}`，`wx` 独占创建，读侧聚合）；name 沿用 `[A-Za-z0-9._-]+` 校验且与既有任务重名时拒绝 |
 | FR-003 | `zcode-sub run "<任务>" --cwd <绝对路径> [--name <名>] [--mode <模式>]`：mode 取值 `--mode` > `config.defaultMode` > **默认 `yolo`（完全访问，用户拍板 D-v2-17）**，非法枚举本地拒绝 exit 1；本地重名预查（已登记名 exit 7、不触上游；EEXIST 兜并发竞态）→ `POST /api/tasks {workspacePath, prompt, title:name, clientRequestId, mode}`；prompt MUST 含子代理身份说明（task 名、reply_to_parent 用法、最终总结要求）；stdout 一行 JSON（name/taskId/status/workspacePath/clientRequestId/warning?）；409 → `zcode_workspace_not_open` exit 3 |
-| FR-004 | `zcode-sub send <name> "<消息>" [--steer\|--queue]`：`POST /api/tasks/:id/messages {text, delivery:"auto"\|"steer"\|"queue"}`（默认 auto=GUI 运行中默认行为）；打印 `{delivery: sent\|queued\|steered, commandId?}` |
-| FR-005 | `zcode-sub wait <name> [--timeout 秒]`：循环 = 查信箱新行 → 无则 `GET /events?after=<eventsSeq>&waitMs=` 长轮询（waitMs=min(30000, 剩余超时)；resync 时 GET 任务并打印溢出提示）；新事件（turn.started/assistant.message/turn.completed/turn.failed/permission.requested/input.queued/input.steered）或信箱新 reply 行 → 打印（permission.requested 附「请在 ZCode GUI 处理」）→ 推进游标 → exit 0；超时 TIMEOUT exit 2 |
+| FR-004 | `zcode-sub send <name> "<消息>" [--steer\|--queue]`：`POST /api/tasks/:id/messages {text, delivery:"auto"\|"steer"\|"queue"}`（默认 auto 在运行中的去向由会话 follow-up mode 决定，GUI 默认排队；要即时打断用 `--steer`）；打印 `{delivery: sent\|queued\|steered, commandId?}`——`steered` 仅为受理，CLI 附提示注入结果以事件流为准（见 FR-005） |
+| FR-005 | `zcode-sub wait <name> [--timeout 秒]`：循环 = 查信箱新行 → 无则 `GET /events?after=<eventsSeq>&waitMs=` 长轮询（waitMs=min(30000, 剩余超时)；resync 时 GET 任务并打印溢出提示）；新事件（turn.started/assistant.message/turn.completed/turn.failed/permission.requested/input.queued/input.steered/steer.injected/steer.fellBack）或信箱新 reply 行 → 打印（permission.requested 附「请在 ZCode GUI 处理」；steer.fellBack 附「引导被降级/拒绝，原因…，消息将按排队处理或需重发」）→ 推进游标 → exit 0；超时 TIMEOUT exit 2。三种 steer 事件只打印，不参与 lastStatus 推导（终态仍只认 turn.completed/turn.failed） |
 | FR-006 | `zcode-sub result <name>`：`GET /api/tasks/:id`；status ∈ running/waiting_permission/waiting_input → 明确说在跑（waiting_* 附 GUI 提示）；idle/error → 打印 status 与 lastAssistantText 全文 |
 | FR-007 | `zcode-sub resume <name> "<继续文本>"`：先 GET，空闲才 POST messages（即接续对话）；running/waiting_* → 拒绝并提示运行中补充用 send |
 | FR-008 | `zcode-sub stop <name>`：`POST /api/tasks/:id/stop`，打印结果 |
 | FR-009 | `zcode-sub list [--json]`：本地任务分片聚合（name/taskId/lastStatus/createdAt/workspacePath） |
 | FR-010 | `zcode-sub mcp`：stdio MCP server；`reply_to_parent(task, message)` 以追加写（单行 JSON，`O_APPEND`）直接写 `ZCODE_SUB_HOME/mailboxes/<task>.jsonl`；task 必须已在本地分片登记（tasks/<name>.json，否则 isError 文本告知任务名）；信箱并发安全 = 只有 MCP 进程写、CLI 只读（行级游标） |
-| FR-011 | 假 ZCode v2 测试（node:test）：并行两任务互不干扰、运行中 send 得 queued/steered、空闲 send/resume 得 sent、stop、events 长轮询（含挂起后到达）与 resync、401/403、409、reply_to_parent 进信箱并被 wait 返回、setup 开关文件生成/读回（临时 ZCODE_DATA_BASE_DIR） |
+| FR-011 | 假 ZCode v2 测试（node:test）：并行两任务互不干扰、运行中 send 得 queued/steered（steer 受理**不自产事件**，注入结果由控制方法投影 `input.steered`+`steer.injected`/`steer.fellBack`）、空闲 send/resume 得 sent、stop、events 长轮询（含挂起后到达）与 resync、401/403、409、reply_to_parent 进信箱并被 wait 返回、wait 打印三种 steer 事件且 fellBack 不改 lastStatus、setup 开关文件生成/读回（临时 ZCODE_DATA_BASE_DIR） |
 | FR-012 | 真机冒烟 `scripts/smoke-real-zcode.sh`：按 v2 步骤断言 |
 | FR-013 | Skill `skill/zcode-sub/SKILL.md` 按 v2 更新（并行、send 语义、permission 提示） |
 | FR-014 | README 按 v2 更新（安装、setup、命令、边界） |
@@ -121,7 +121,7 @@ v1 的 seq/dispatch/status/notice 行语义删除；daemon.json、daemon.log、c
 |---|---|---|---|---|
 | `GET /health`（上游） | — | `{ok,api:"zcode-local-task-api",version:2,zcodeVersion}` | setup | v2 |
 | `POST /api/tasks`（上游） | Bearer；`{workspacePath,prompt,mode?,title?,clientRequestId?}` | 201 `{taskId}` 或 `{taskId,warning:"first_prompt_failed"}`（部分失败，任务已建）；同 `clientRequestId` 去重命中 200 返回同一 `{taskId}`；mode 非法 400；409 `{error:"workspace_not_open"}` | run | v2 |
-| `POST /api/tasks/:id/messages`（上游） | `{text,delivery?:"auto"\|"queue"\|"steer"}` | 202 `{delivery:"sent"\|"queued"\|"steered",commandId?}`；404 | send/resume | v2 |
+| `POST /api/tasks/:id/messages`（上游） | `{text,delivery?:"auto"\|"queue"\|"steer"}`（auto 不带 requestedDelivery，CLI 按会话 follow-up mode 裁决，GUI 默认 queue；steer→guide 与 GUI 同一条 v4 sendText 链路） | 202 `{delivery:"sent"\|"queued"\|"steered",commandId?}`（steered 仅为受理；注入结果以事件流 `input.steered`→`steer.injected`/`steer.fellBack` 为准）；404 | send/resume | v2 |
 | `POST /api/tasks/:id/stop`（上游） | — | 202 | stop | v2 |
 | `GET /api/tasks/:id`（上游） | — | `{taskId,workspacePath,title,status,turnCount,lastAssistantText,updatedAt}` | result/resume/wait(resync) | v2 |
 | `GET /api/tasks/:id/events?after=&waitMs=`（上游） | after=seq, waitMs 0..30000 | `{events:[{seq,type,at,...}],nextSeq}`；溢出 `{resync:true}` | wait | v2 |
@@ -133,7 +133,7 @@ v1 的 seq/dispatch/status/notice 行语义删除；daemon.json、daemon.log、c
 - 机器可读错误码（stderr+退出码统一，闭集）：`zcode_api_unreachable`（连不上 API 或 **wait 超时 TIMEOUT**，2）、`zcode_workspace_not_open`（409：未打开或远端工作区，3）、`zcode_send_failed`（messages/stop/result/events 等按 taskId 请求的 4xx/5xx 非 401/403/409，含 404 任务不存在，**及运行中 resume 被拒**，4）、`zcode_unauthorized`（401/403，5）、`zcode_name_invalid`（名字非法，7）/`zcode_name_taken`（重名，7）、`zcode_too_many_running`（非终态任务达上限，8）。仅内部使用不占退出码：`zcode_not_configured`、`zcode_task_not_found`（本地无此任务）、`zcode_create_failed`（建任务异常响应）、`zcode_health_mismatch`、`zcode_task_busy_for_resume`（归入 4）。
 - **本集成不做哪些写操作**：不批权限、不写 ZCode 数据文件（开关文件按契约第 1 条「由用户或桥接程序 setup 写入」，仅 setup 显式执行）。
 - **B 依赖的字段级契约（与 A 实装对齐后的终值）**：
-  - `events[i]`：`seq`（每任务从 1 单调，缓冲 500，溢出 `{resync:true}`）、`at`（毫秒）、`type` ∈ turn.started / assistant.message / turn.completed / turn.failed / permission.requested / input.queued / input.steered；payload 字段 `turn.started{turnId}`、`assistant.message{text}`、`turn.completed{text}`（停止后 text 可为空）、`turn.failed{error}`、`permission.requested{summary}`、`input.queued|steered{commandId}`。
+  - `events[i]`：`seq`（每任务从 1 单调，缓冲 500，溢出 `{resync:true}`）、`at`（毫秒）、`type` ∈ turn.started / assistant.message / turn.completed / turn.failed / permission.requested / input.queued / input.steered / steer.injected / steer.fellBack；payload 字段 `turn.started{turnId}`、`assistant.message{text}`、`turn.completed{text}`（停止后 text 可为空）、`turn.failed{error}`、`permission.requested{summary}`、`input.queued{commandId}`、`input.steered{commandId}`（由 CLI `turn_steer_queued` 投影产生——steer 受理不再由 API 自产事件）、`steer.injected`（由 `turn_steer_status` drained 投影——引导已注入当前轮，无额外 payload）、`steer.fellBack{error}`（由 `turn_steer_status` discarded/rejected 投影——引导被降级/拒绝）。
   - `POST /api/tasks` 的 `title` 传 name；可选 `clientRequestId` 为去重幂等键（**1..200 字符、10 分钟窗口**，命中返回同一 taskId、状态码 200）——run 生成 `zsub-<uuid>`（41 字符）并记入本地分片，重试间隔毫秒级远在窗口内；`mode` 为 11 值枚举（default/yolo/guarded/plan/edit/acceptEdits/auto/dontAsk/bypassPermissions/autoEdit/build），非法 400——B 默认传 `yolo`、`--mode`/`config.defaultMode` 可覆盖（D-v2-17，本地预校验非法值）；`turnCount` 为快照中 assistant 消息条数。
   - **create 部分失败**（偏离 #13）：首条 prompt 发送失败仍回 `201 {taskId, warning:"first_prompt_failed"}`——B 照常登记，stdout JSON 带 `warning` 字段、stderr 提示用 send 补发、退出码 0（任务已建，非零会误判整轮失败）。
   - **op 异常**（偏离 #14）：Host 退出时在飞请求结清为 `503 {error:"unavailable_host"}`——B 视为暂态：GET/带幂等键的 createTask 重试一次，其余 POST 不重试，最终失败报 `zcode_api_unreachable`（exit 2，文案带 unavailable_host）。
@@ -328,7 +328,7 @@ stateDiagram-v2
 | D-v2-02 | 多任务并行 | 每 run 一个 ZCode 对话，name→taskId 映射 | 契约 v2 createTask 天然支持 |
 | D-v2-03 | daemon 删除 | 无常驻进程 | v2 无出站推送；events 是拉模式；MCP 由 ZCode 拉起直写信箱 |
 | D-v2-04 | 信箱 reply-only | MCP 独写、CLI 只读、行号游标 | 消除跨进程 seq 竞争；O_APPEND 单行原子 |
-| D-v2-05 | send 默认 auto | 与 GUI 运行中默认行为一致 | 用户要求「像桌面端原生」；queue/steer 显式选项覆盖 |
+| D-v2-05 | send 默认 auto | 与 GUI 运行中默认行为一致（不带 requestedDelivery，运行中的去向由会话 follow-up mode 裁决，GUI 默认 queue——文档写明要即时打断用 --steer） | 用户要求「像桌面端原生」；queue/steer 显式选项覆盖 |
 | D-v2-06 | resume 空闲检查 | running/waiting_* 拒绝 | 「续聊」语义 = 开新一轮对话输入；运行中补充是 send 的职责，两命令不重叠 |
 | D-v2-07 | list 只用本地 | 不依赖可选端点 | YAGNI；A 未承诺实现 |
 | D-v2-08 | permission 只提示 | 不做 API 批权限 | 契约 v2 明确本版不做 |
@@ -338,7 +338,7 @@ stateDiagram-v2
 | D-v2-15（评审二轮） | 刷新 404 置 error | GUI 删除的任务在下次 run 刷新时释放并发额度 | 否则幽灵任务永久占坑、无 CLI 清理手段 |
 | D-v2-16（评审二轮） | 损坏分片在重登记时备份并覆盖 | registerTask 遇 EEXIST 且分片不可解析 → 备份 .corrupt 后覆盖 | 修复「备份路径不可达、名字永久卡死」的死局 |
 | D-v2-17（真机反馈，用户拍板） | run 默认 mode="yolo"（GUI『完全访问』） | 派发的子代理不再卡权限确认；--mode 与 config.defaultMode 可覆盖 | 权限请求事件（permission.requested）处理逻辑保留——非 yolo 模式或上游仍发请求时照常提示去 GUI |
-| D-v2-18（真机反馈） | steer 为真打断语义 | send --steer 请求打断当前生成，ZCode 无法打断时降级排队（应答 delivery=steered/queued 如实显示，透传实现） | A 侧正把 steer 改为与 GUI 一致的真打断 |
+| D-v2-18（真机反馈；A 侧 d4c518ba 已落地） | steer 为真打断语义 | --steer = sendPrompt 带 `requestedDelivery:"guide"`（与 GUI 同一条 v4 sendText 链路）；应答 `202 {delivery:"steered",commandId}` 仅为**受理**，注入结果以事件流回报：`input.steered{commandId}`（CLI `turn_steer_queued` 投影，API 不再自产）→ `steer.injected`（drained，已注入当前轮）/ `steer.fellBack{error}`（discarded/rejected，降级/拒绝）；wait 打印三事件、fellBack 明确告知「引导被降级/拒绝，原因…，消息将按排队处理或需重发」，lastStatus 推导不受影响 | 用户要求真打断；受理与注入是两个时刻，必须以事件流为准；旧 enqueue+promote 近似已在 A 侧废弃 |
 | D-v2-11（评审一轮） | 任务登记分片文件 + wx 独占创建 | 单文件读改写并发实测丢 25% | 分片天然消竞争，与信箱同构 |
 | D-v2-12（评审一轮） | setup 端口冲突报错不覆盖 | 开关文件是 ZCode 侧事实源 | 自动重写会让 GUI 配置静默漂移 |
 | D-v2-13（契约对齐） | 所有 :taskId 请求带 workspacePath；seq 回退重置游标 | A 实装：ZCode 重启丢归属表、事件缓冲清空 | 路由兜底由调用方提供归属 |

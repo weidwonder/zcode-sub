@@ -154,9 +154,18 @@ test("sendMessage：空闲任务 sent；运行中任务 auto→queued、steer→
   const page = await getEvents(config, taskId, 0, 0);
   assert.deepEqual(
     page.events.map((event) => event.type),
-    ["turn.started", "input.queued", "input.steered"],
+    ["turn.started", "input.queued"],
   );
-  assert.equal(page.nextSeq, 3);
+  assert.equal(page.nextSeq, 2);
+
+  // steer 应答仅为受理：input.steered 与注入结果由控制方法投影（A 侧 CLI 投影）后才进事件流
+  fake.settleSteer(taskId, "injected");
+  const injected = await getEvents(config, taskId, page.nextSeq, 0);
+  assert.deepEqual(
+    injected.events.map((event) => event.type),
+    ["input.steered", "steer.injected"],
+  );
+  assert.equal(injected.events[0].commandId, steered.commandId, "input.steered 的 commandId 应等于受理应答的");
 });
 
 test("sendMessage/stopTask/getTask/getEvents：任务不存在 → zcode_send_failed（exit 4）", async () => {
@@ -571,19 +580,31 @@ test("事件字段：turn.started 带 turnId（每任务自增），input.queued
 
   await sendMessage(config, taskId, "第一句"); // 空闲 → turn.started
   fake.createTaskAlreadyRunning(taskId);
-  await sendMessage(config, taskId, "排队的话", "auto"); // input.queued
-  await sendMessage(config, taskId, "插队的话", "steer"); // input.steered
+  const queued = await sendMessage(config, taskId, "排队的话", "auto"); // → input.queued（受理即自产）
+  const steered = await sendMessage(config, taskId, "插队的话", "steer"); // → 202 steered 仅受理，不自产事件
 
   const page = await getEvents(config, taskId, 0, 0);
-  const [started, queued, steered] = page.events;
+  const started = page.events[0];
   assert.equal(started.type, "turn.started");
   assert.match(started.turnId, /^turn-\d+$/u);
   assert.equal(started.turnId, "turn-1");
-  assert.equal(queued.type, "input.queued");
-  assert.match(queued.commandId, /^cmd-\d+$/u);
-  assert.equal(steered.type, "input.steered");
-  assert.match(steered.commandId, /^cmd-\d+$/u);
-  // commandCounter 全 fake 共享，只断自增关系（cmd-N 严格递增）
+  const queuedEvent = page.events.find((event) => event.type === "input.queued");
+  assert.ok(queuedEvent, "auto 受理应自产 input.queued");
+  assert.match(queuedEvent.commandId, /^cmd-\d+$/u);
+  assert.ok(
+    !page.events.some((event) => event.type === "input.steered"),
+    "steer 受理不得自产 input.steered（注入结果由控制方法投影）",
+  );
+
+  fake.settleSteer(taskId, "fellBack", "discarded_by_cli");
+  const settled = await getEvents(config, taskId, page.nextSeq, 0);
+  const steeredEvent = settled.events.find((event) => event.type === "input.steered");
+  const fellBack = settled.events.find((event) => event.type === "steer.fellBack");
+  assert.ok(steeredEvent && fellBack, "settleSteer 后应出现 input.steered 与 steer.fellBack");
+  assert.equal(steeredEvent.commandId, steered.commandId);
+  assert.equal(fellBack.error, "discarded_by_cli");
+
+  // commandCounter 全 fake 共享，只断自增关系（cmd-N 严格递增；基于两次应答的 commandId）
   assert.equal(
     Number(steered.commandId.slice(4)),
     Number(queued.commandId.slice(4)) + 1,

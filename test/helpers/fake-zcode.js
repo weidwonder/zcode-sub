@@ -7,8 +7,8 @@ import { randomUUID } from "node:crypto";
 // 校验顺序对齐 A 侧实装：路由级 404/405 → Host 403 → Bearer 401 → 415 → 413 → 400
 // （POST /api/tasks 另有 mode 白名单 400，先于 409 工作区检查——对齐偏离#7）。
 // 控制方法（用例驱动）：createTaskAlreadyRunning / emitEvent / setTaskStatus /
-// setLastAssistantText / createdTasks / calls / simulateResync / forgetOwnership /
-// resetEventSeq / failNextCreatePrompt / setOpUnavailable / stop。
+// setLastAssistantText / settleSteer / createdTasks / calls / simulateResync /
+// forgetOwnership / resetEventSeq / failNextCreatePrompt / setOpUnavailable / stop。
 
 const MAX_WAIT_MS = 30_000;
 const MAX_BODY_CHARS = 16 * 1024 * 1024; // 413 阈值：16MiB
@@ -61,6 +61,7 @@ export async function startFakeZcode({ token = "test-token", port: listenPort = 
     updatedAt: Date.now(),
     seq: 0,
     events: [],
+    pendingSteerCommandId: null, // steer 受理待决：settleSteer 前由 messages 端点登记
     waiters: new Set(), // 挂起中的长轮询唤醒器
   });
 
@@ -234,7 +235,13 @@ export async function startFakeZcode({ token = "test-token", port: listenPort = 
         if (task.status === "running") {
           commandCounter += 1;
           const commandId = `cmd-${commandCounter}`;
-          appendEvent(task, delivery === "steer" ? "input.steered" : "input.queued", { commandId });
+          if (delivery === "steer") {
+            // steer 仅为受理：不自产事件，注入结果由 settleSteer（A 侧 CLI 投影）追加
+            task.pendingSteerCommandId = commandId;
+          } else {
+            // auto 不带 requestedDelivery，CLI 按会话 follow-up mode 裁决——此处模拟 GUI 默认 queue
+            appendEvent(task, "input.queued", { commandId });
+          }
           json(response, 202, { delivery: delivery === "steer" ? "steered" : "queued", commandId });
           return;
         }
@@ -356,6 +363,22 @@ export async function startFakeZcode({ token = "test-token", port: listenPort = 
       if (task) {
         task.lastAssistantText = text;
         task.updatedAt = Date.now();
+      }
+    },
+    // steer 受理后的注入结果：input.steered{commandId}（turn_steer_queued 投影）+
+    // steer.injected（drained）或 steer.fellBack{error}（discarded/rejected）
+    settleSteer(taskId, outcome, errorText) {
+      const task = tasks.get(taskId);
+      if (!task) throw new Error(`settleSteer: no task ${taskId}`);
+      if (task.pendingSteerCommandId === null) throw new Error("settleSteer: 该任务没有待决的 steer 受理");
+      appendEvent(task, "input.steered", { commandId: task.pendingSteerCommandId });
+      task.pendingSteerCommandId = null;
+      if (outcome === "injected") {
+        appendEvent(task, "steer.injected");
+      } else if (outcome === "fellBack") {
+        appendEvent(task, "steer.fellBack", { error: errorText ?? "steer_unavailable" });
+      } else {
+        throw new Error(`settleSteer: 未知 outcome ${outcome}`);
       }
     },
     get createdTasks() {

@@ -46,7 +46,7 @@ exec /path/to/zcode-sub/bin/zcode-sub.js "$@"
 |---|---|
 | `zcode-sub setup [--api-port …]` | 写/读开关文件、健康检查、打印 MCP 配置 |
 | `zcode-sub run "<任务>" --cwd <绝对路径> [--name <名>] [--mode <模式>]` | 在 ZCode 新建对话执行任务；默认 mode=yolo（完全访问，子代理不卡权限确认）；stdout 一行 JSON（name/taskId） |
-| `zcode-sub send <name> "<消息>" [--steer\|--queue]` | 补充消息：默认 auto（运行中=GUI 默认排队/引导）；`--steer` = 请求**打断**当前生成（ZCode 无法打断时降级排队）；空闲=接续对话 |
+| `zcode-sub send <name> "<消息>" [--steer\|--queue]` | 补充消息：默认 auto（运行中=GUI 默认排队/引导）；`--steer` = 请求**打断**当前生成（应答 `steered` 仅为受理，注入结果以事件流 `steer.injected` / `steer.fellBack` 为准）；空闲=接续对话 |
 | `zcode-sub wait <name> [--timeout 秒]` | 阻塞等新事件/子代理主动消息（超时 TIMEOUT，退出码 2） |
 | `zcode-sub result <name>` | 最后回复全文 + 状态；还在跑会明确说 |
 | `zcode-sub resume <name> "<继续文本>"` | 空闲任务接续对话（运行中补充用 send） |
@@ -61,7 +61,7 @@ exec /path/to/zcode-sub/bin/zcode-sub.js "$@"
 ## 重要边界
 
 - **多任务并行有上限**：每次 `run` 在 ZCode 新建一个对话，name→taskId 映射存本地；同时未结束（运行/等待/派发中）的任务数上限默认 4，`ZCODE_SUB_MAX_RUNNING` 可调，超限报 `zcode_too_many_running`。
-- **运行中补充消息**：`send` 默认 `auto`（与 GUI 运行中发送的默认行为一致）；`--steer` = 真打断（ZCode 无法打断时按上游应答降级为 queued）、`--queue` = 强制排队。返回的 `sent`/`queued`/`steered` 与 commandId 按应答如实打印。
+- **运行中补充消息**：`send` 默认 `auto`（与 GUI 运行中发送的默认行为一致）；`--steer` = 真打断（ZCode 无法打断时按上游应答降级为 queued）、`--queue` = 强制排队。返回的 `sent`/`queued`/`steered` 与 commandId 按应答如实打印。auto 运行中的去向由会话 follow-up mode 决定（GUI 默认排队）——要即时打断用 `--steer`；`steered` 应答后用 `wait` 看注入结果（`steer.injected`=生效 / `steer.fellBack`=被降级或拒绝，消息将按排队处理或需重发）。
 - **默认完全访问**：run 默认 mode=yolo（GUI『完全访问』，用户拍板）——派发的子代理不再卡权限确认；`--mode` 或 config `defaultMode` 可改（11 值枚举）。wait 收到 `permission.requested` 仍会提示去 ZCode GUI 处理（本工具不通过 API 批权限；yolo 下上游一般不再发权限请求，处理逻辑保留）。
 - **事件缓冲与重启**：上游每任务事件有界缓冲（500 条），溢出时 wait 收到 `resync` 提示改用 result 轮询；ZCode 重启后事件缓冲清空、序号可能回退，wait 会重置游标继续等待。
 - **终态口径**：`result` 以 `GET /api/tasks/:id` 的 status 为准（idle/error 即终态，lastAssistantText 为最后回复；停止后完成事件文本可为空）。

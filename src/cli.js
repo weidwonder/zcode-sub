@@ -25,7 +25,8 @@ const USAGE = `zcode-sub 用法（把 ZCode 桌面版当子代理）：
   zcode-sub run "<任务>" --cwd <绝对路径> [--name <名>] [--mode <模式>]
       在 ZCode 该工作区新建对话执行任务（多任务可并行）；stdout 一行 JSON。默认 yolo（完全访问）。
   zcode-sub send <name> "<消息>" [--steer|--queue]
-      补充消息：默认 auto（运行中=GUI 排队/引导语义）；--steer 强制引导、--queue 强制排队；
+      补充消息：默认 auto（运行中的去向由会话设置决定，GUI 默认排队；要即时打断用 --steer）；
+      --steer 强制引导打断（应答仅为受理，注入结果以事件流为准）、--queue 强制排队；
       任务空闲时即接续对话（sent）。
   zcode-sub wait <name> [--timeout 秒]
       阻塞等新事件或子代理主动消息（适合后台运行，退出即唤醒）；超时输出 TIMEOUT（退出码 2）。
@@ -453,6 +454,10 @@ async function cmdSend(home, flags) {
   const result = await api.sendMessage(config, task.taskId, message, delivery, task.workspacePath);
   const commandId = result?.commandId ? `（commandId=${result.commandId}）` : "";
   process.stdout.write(`✓ 投递结果：${result?.delivery ?? "?"}${commandId}\n`);
+  if (result?.delivery === "steered") {
+    // FR-004：steered 仅为受理，注入结果（steer.injected / steer.fellBack）以事件流为准
+    process.stdout.write("ℹ steered 仅为受理引导；注入结果以事件流为准（wait 可见 steer.injected / steer.fellBack）\n");
+  }
 }
 
 async function cmdResume(home, flags) {
@@ -627,8 +632,16 @@ async function cmdWait(home, flags) {
 // 返回本次写入的字符数（含截断提示行），供调用方的批级总量闸（WAIT_OUTPUT_LIMIT）累计。
 const EVENT_TEXT_LIMIT = 2000;
 
+// steer 三事件的可读正文（commandId/error 是机器字段，原文打印为空）；其余事件保持 [type] 原文
+const STEER_EVENT_TEXT = {
+  "input.steered": (event) => `已受理引导（commandId=${event.commandId ?? "?"}）；注入结果以事件流为准`,
+  "steer.injected": () => "引导已注入当前轮（打断生效）",
+  "steer.fellBack": (event) => `引导被降级/拒绝，原因：${event.error ?? "?"}——消息将按排队处理或需重发`,
+};
+
 function writeEventLine(event) {
-  const raw = event.text ?? event.error ?? event.summary ?? "";
+  const steerText = STEER_EVENT_TEXT[event.type];
+  const raw = steerText ? steerText(event) : (event.text ?? event.error ?? event.summary ?? "");
   const text = typeof raw === "string" ? raw : String(raw);
   const lines = [`[${event.type}] ${text.length <= EVENT_TEXT_LIMIT ? text : text.slice(0, EVENT_TEXT_LIMIT)}\n`];
   if (text.length > EVENT_TEXT_LIMIT) {
