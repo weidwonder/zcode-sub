@@ -37,7 +37,7 @@ ZCode 桌面版需已装「本机任务 API」补丁：setup 健康检查报 `zc
 - 片段中 `command` 用 setup 打印的**绝对路径**（GUI 拉起的进程不一定能在 PATH 找到 node），原样复制，不要手打成 `"node"`。
 - 片段 `env.ZCODE_SUB_HOME` 必须与你跑 zcode-sub 命令时的值一致——不一致时子代理调 reply_to_parent 报「任务不在登记表」，父侧只看到永远收不到 `[reply]`。
 
-## 5. HOME 被重定向的环境（座位/容器常见）
+## 5. HOME 被重定向的环境（沙箱、多账号容器常见）
 
 症状任一：`EACCES … /var/empty/...`；`list` 为空但 ZCode GUI 里明明有任务；setup 报「✗ 状态目录不可写且未设置 ZCODE_SUB_HOME」。
 

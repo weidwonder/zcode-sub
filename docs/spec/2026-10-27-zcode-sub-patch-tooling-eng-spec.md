@@ -59,7 +59,7 @@ authority_refs:
   - 不做数据自动回滚（覆盖用户 `~/.zcode` 是高风险动作，README 提供手动步骤，脚本不代做）。
   - 不做 Windows / Linux 构建（产物只面向 mac arm64；bundle.mjs 本身支持其它目标，本工具链不暴露）。
   - 不做签名与公证（开源构建链路 `identity: null`；install 脚本仅提供可选 ad-hoc 重签）。
-  - 不改全局 Node/pnpm（Node 24.14.0 以解压目录方式放工具链根目录——默认 `<家目录>/.cache/zcode-sub/toolchains/`，`ZCODE_TOOLCHAIN_ROOT` 可改；`<家目录>` = `ZCODE_REAL_HOME`，未设时为 `$HOME`）。
+  - 不改全局 Node/pnpm（Node 24.14.0 以解压目录方式放工具链根目录——`ZCODE_TOOLCHAIN_ROOT`，默认值见 patch/README.md「环境变量」）。
 - 依赖的上游 / 被依赖的下游：
   - 上游 ZCode 源码（github.com/zai-org/ZCode，本地 `/Users/weidwonder/projects/ZCode` 只读），版本要求 Node 24.14.0 + pnpm 10.33.2（`mise.toml:3-4`），打包入口 `pnpm bundle:desktop`（`package.json:55`），身份解析 `packages/desktop/scripts/desktop-product-identity.mjs:59-68`，mac 签名默认关（`packages/desktop/electron-builder.config.js:833` identity null）。依赖声明见 `engineering-context/dependencies/ZCode.md`。
   - 上游 `feat/local-bot-webhook` 分支（`/Users/weidwonder/projects/ZCode/.worktrees/local-bot-webhook`）：`sync-upstream.sh` 的补丁提交来源；`chore(local-dw):` 前缀提交是本地专用，MUST 排除。
@@ -80,7 +80,7 @@ authority_refs:
 | 编号 | 需求 |
 |---|---|
 | FR-001 | `patch/backup-zcode-data.sh <备份目录>`：对 `~/.zcode` 下所有 SQLite 库用 `sqlite3 <db> ".backup <dst>"` 在线备份（含 WAL 状态），复制其余配置/数据文件（范围见 §4.1），生成 `manifest.json`（路径、字节数、sha256）与 `sha256sums.txt`；不修改源数据；可重复执行（目标已存在则中止并提示）；ZCode 数据目录不存在时报错退出 1 并提示「HOME 被重定向的环境请设 `ZCODE_REAL_HOME=<真实家目录>`（或直接设 `ZCODE_ROOT`）」（`--dry-run` 同样拦截）；支持 `--dry-run` 与 `--minimal`。 |
-| FR-002 | `patch/build-desktop.sh <ZCode源码目录>`：确保 Node 24.14.0（下载解压到 `<工具链根>/node-v24.14.0`——工具链根默认 `<家目录>/.cache/zcode-sub/toolchains`，`ZCODE_TOOLCHAIN_ROOT` 可改；已存在直接用；不改全局）与 pnpm 10.33.2 可用（缺失或版本不符时自动安装到 `<工具链根>/pnpm-10.33.2`，`--prefix` 隔离不动全局，失败才报错）；`pnpm install`（幂等）；以 `ZCODE_ENV=production`、`ZCODE_AUTO_UPDATE=0`、按 `--identity preview|production`（默认 preview）设定身份变量；缓存默认重定向到工具链根（pnpm store / npm cache / node-gyp / XDG / electron 与 electron-builder cache，用户已显式设置的不覆盖）；xcode-select 指向残缺 Xcode 而 CommandLineTools（判 `clang` 可执行且 `SDKs/MacOSX.sdk` 存在——CLT 不带 xcodebuild，不能以它为判定）可用时自动改用 CLT 的 `DEVELOPER_DIR`/`SDKROOT` 并告警；执行 `pnpm bundle:desktop`（mac arm64），bundle 整体失败但本次已产出 .app/.zip（受限沙箱 hdiutil 必败致 DMG 阶段失败）时打印产物并视为成功；`--no-dmg` 显式走 zip 通路（复刻 prepare→build→electron-builder --mac zip + 体积审计，跳过 bundle.mjs 的 DMG 与收尾机械校验）。结束时打印产物路径（.app unpacked 目录与 .dmg/.zip）。支持 `--dry-run`（只打印将执行的命令不执行）、`--skip-install`、`--no-dmg`。 |
+| FR-002 | `patch/build-desktop.sh <ZCode源码目录>`：确保 Node 24.14.0（下载解压到 `<工具链根>/node-v24.14.0`——工具链根 = `ZCODE_TOOLCHAIN_ROOT`，默认值见 patch/README.md「环境变量」；已存在直接用；不改全局）与 pnpm 10.33.2 可用（缺失或版本不符时自动安装到 `<工具链根>/pnpm-10.33.2`，`--prefix` 隔离不动全局，失败才报错）；`pnpm install`（幂等）；以 `ZCODE_ENV=production`、`ZCODE_AUTO_UPDATE=0`、按 `--identity preview|production`（默认 preview）设定身份变量；缓存默认重定向到工具链根（pnpm store / npm cache / node-gyp / XDG / electron 与 electron-builder cache，用户已显式设置的不覆盖）；xcode-select 指向残缺 Xcode 而 CommandLineTools（判 `clang` 可执行且 `SDKs/MacOSX.sdk` 存在——CLT 不带 xcodebuild，不能以它为判定）可用时自动改用 CLT 的 `DEVELOPER_DIR`/`SDKROOT` 并告警；执行 `pnpm bundle:desktop`（mac arm64），bundle 整体失败但本次已产出 .app/.zip（受限沙箱 hdiutil 必败致 DMG 阶段失败）时打印产物并视为成功；`--no-dmg` 显式走 zip 通路（复刻 prepare→build→electron-builder --mac zip + 体积审计，跳过 bundle.mjs 的 DMG 与收尾机械校验）。结束时打印产物路径（.app unpacked 目录与 .dmg/.zip）。支持 `--dry-run`（只打印将执行的命令不执行）、`--skip-install`、`--no-dmg`。 |
 | FR-003 | `patch/install-desktop.sh <产物 .app 或 .dmg>`：从产物 Info.plist 读 CFBundleIdentifier/CFBundleName 决定安装目标（`dev.zcode.app` → `/Applications/ZCode.app`；`dev.zcode.app.preview` → `/Applications/ZCode Preview.app`）；检测目标 app 是否在运行（pgrep，检测手段不可用时警告并要求 `--yes` 确认）；把现有 app `mv` 到 `<家目录>/projects/zcode-backups/apps/<Name>-<版本>-<时间戳>.app`（备份根 `ZCODE_BACKUP_ROOT` 可改）；`ditto` 拷入新包；`xattr -dr com.apple.quarantine`；默认 ad-hoc 重签（`--no-sign` 跳过）。支持 `--dry-run`。 |
 | FR-004 | `patch/rollback-desktop.sh`：列出 `<家目录>/projects/zcode-backups/apps/`（备份根 `ZCODE_BACKUP_ROOT` 可改）的可回滚快照；无参数恢复最近一份（或 `--from <快照路径>` 指定）；同样检测运行、mv 当前包到备份区（带 `rolledback-from-` 前缀）、mv 快照回 `/Applications`。支持 `--dry-run`。 |
 | FR-005 | `patch/sync-upstream.sh <ZCode源码目录>`：`git fetch origin`；从 `origin/main` 创建 `local/patched-<短SHA>` 分支（已存在则中止）；补丁提交**只以 `patch/series` 显式列出的净提交为准**（一行一个提交 SHA，`#` 注释行忽略，`! <命令>` 行是 pick 后的自定义校验；series 由派发者在补丁评审通过后固化——上游分支含 v1 引入+revert 对冲提交对，自动提取会把对冲对一起 pick，故不做自动取分支）；series 未固化时仅建分支并打警告，不 cherry-pick；冲突即停（打印冲突文件清单，保留现场，退出码 4）；全部通过后跑 `pnpm typecheck` 与 `pnpm lint`（Node 24.14.0 PATH 前置）；结尾打印下一步（build-desktop.sh）。git 命令一律带 `-c safe.directory='*'`。支持 `--dry-run`（打印计划：新分支名、将 pick 的提交清单、将跑的校验命令，不执行写操作）。 |
@@ -160,7 +160,7 @@ authority_refs:
 ### 4.2 build-desktop.sh 流程
 
 1. 校验源码目录存在 `package.json` 且 `pnpm-workspace.yaml` 存在，否则退出 1。
-2. Node 工具链：`<工具链根>/node-v24.14.0/bin/node` 不存在（工具链根 = `ZCODE_TOOLCHAIN_ROOT`，默认 `<家目录>/.cache/zcode-sub/toolchains`）→ 从 `https://registry.npmmirror.com/-/binary/node/v24.14.0/node-v24.14.0-darwin-arm64.tar.gz` 下载（官方 `https://nodejs.org/dist/…` 兜底，重试一次）解压；`PATH` 前置该 bin 目录。
+2. Node 工具链：`<工具链根>/node-v24.14.0/bin/node` 不存在（工具链根 = `ZCODE_TOOLCHAIN_ROOT`，默认值见 patch/README.md「环境变量」）→ 从 `https://registry.npmmirror.com/-/binary/node/v24.14.0/node-v24.14.0-darwin-arm64.tar.gz` 下载（官方 `https://nodejs.org/dist/…` 兜底，重试一次）解压；`PATH` 前置该 bin 目录。
 3. pnpm：PATH 中版本恰为 10.33.2 则直接用（shebang `#!/usr/bin/env node` 会随 PATH 取 Node 24）；缺失或版本不符时自动 `npm install --global --prefix <工具链根>/pnpm-10.33.2 pnpm@10.33.2`（`--prefix` 装进工具链目录，不动全局），失败才报错。
 4. `pnpm install`（除非 `--skip-install`）。
 5. 身份变量（来源：`desktop-product-identity.mjs:59-68` 的解析规则）：
@@ -193,7 +193,7 @@ authority_refs:
 
 | 失败分类 | 恢复行为 | 操作员干预点 |
 |---|---|---|
-| 下载 Node 失败（npmmirror 与官方都失败） | 报错退出 1，打印两个 URL 供手动下载放置 | 手动下载解压到工具链根（默认 `<家目录>/.cache/zcode-sub/toolchains`，`ZCODE_TOOLCHAIN_ROOT` 可改）后重跑 |
+| 下载 Node 失败（npmmirror 与官方都失败） | 报错退出 1，打印两个 URL 供手动下载放置 | 手动下载解压到工具链根（`ZCODE_TOOLCHAIN_ROOT`，默认值见 patch/README.md「环境变量」）后重跑 |
 | `pnpm install`/构建失败 | 原样透传 bundle.mjs 的错误输出退出 1 | 用户在源码目录自查；脚本不重试（bundle.mjs 自带 electron-builder 3 次重试） |
 | install 时目标运行中 | 退出 3，不杀进程 | 用户退出 ZCode 后重跑 |
 | install 中途失败（mv 后 ditto 前） | 报错并提示：旧包已在备份区，重跑 rollback-desktop.sh 恢复 | rollback |
@@ -246,7 +246,12 @@ authority_refs:
 
 ### 8.2 替换清单（Replacement Ledger，MUST）
 
-无被取代物（全新增，无旧函数/文件/配置被替代）。
+首版无被取代物（全新增）。2026-10-28 补登：
+
+| 被取代物 | 类型 | 取代者 | 引用数 | 处置 | 核销 |
+|---|---|---|---|---|---|
+| 三个脚本（backup/install/rollback）写死的 `REAL_HOME`、两个脚本（build/sync）写死的 `TOOLCHAIN_ROOT` | 配置项 | `ZCODE_REAL_HOME` / `ZCODE_TOOLCHAIN_ROOT` 推导（§8.1） | 0（`patch/`、`scripts/`） | 删除 | ✅ |
+
 
 ### 8.3 数据迁移 / 灰度
 
