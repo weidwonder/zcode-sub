@@ -9,7 +9,7 @@ ZCode 拉起 zcode-sub mcp ──reply_to_parent──▶ 信箱文件（wait �
 ```
 
 - 运行环境：Node ≥ 22，零运行时依赖，ESM。
-- 上游依赖：ZCode 桌面版装了「本机任务 API」补丁（契约 v2，开关文件 `~/.zcode/v2/local-task-api.json`）。上游事实卡：`engineering-context/dependencies/ZCode/bots-webhook.md`（v1 调查结论与决策记录）。
+- 上游依赖：ZCode 桌面版装了「本机任务 API」补丁（契约 v2，开关文件 `~/.zcode/v2/local-task-api.json`）。补丁版 ZCode 的构建、安装替换、数据保全与上游跟随工具在本仓 `patch/`（流程见 [patch/README.md](patch/README.md)）。上游事实卡：`engineering-context/dependencies/ZCode/bots-webhook.md`（v1 调查结论与决策记录）。
 
 ## 安装
 
@@ -36,7 +36,7 @@ exec /path/to/zcode-sub/bin/zcode-sub.js "$@"
    - ZCode 侧开关文件 `~/.zcode/v2/local-task-api.json` 不存在时，setup 会生成 token 并以 0600 写入（`{"enabled":true,"port":47821,"token":...}`），**写完需重启 ZCode 生效**；已存在则读回 token/端口；
    - 检查本机任务 API 健康；
    - 打印把 `zcode-sub mcp` 配进 ZCode MCP 配置的 JSON 片段——配置文件为 **`~/.zcode/cli/config.json` 的 `mcp.servers`**（桌面版与 CLI 共用，ZCode 实时加载，子代理首次调用工具会弹权限确认；需 `features.mcp`）；片段里的 node 路径自动转为 Homebrew 稳定 opt 链接（升级 Node 不断链）。
-2. （可选）在 ZCode 里打开常驻工作区——`run --cwd` 的工作区必须在 ZCode 中打开，否则报 `zcode_workspace_not_open`（409）。
+2. 无需预先打开工作区：`--cwd` 指向的本机目录未在 ZCode 打开时，ZCode 会自动在当前窗口加该目录的标签页（无确认弹窗，最长等 30 秒）；自动打开失败按 exit 3 报告。
 
 状态目录默认 `~/.zcode-sub`（真实用户家目录，`os.userInfo().homedir`），环境变量 `ZCODE_SUB_HOME` 覆盖；开关文件定位可用 `ZCODE_DATA_BASE_DIR` 覆盖。目录不可写时 setup 会提示 `dwc grant`。全部通信只走 127.0.0.1，鉴权为开关文件里的 token（Bearer）。
 
@@ -73,6 +73,33 @@ exec /path/to/zcode-sub/bin/zcode-sub.js "$@"
 - **副作用安全**：建任务与 send/resume 消息请求均带 `clientRequestId` 幂等键（同键返回首次应答），网络失败同键安全重试一次；其余写入 POST 失败不自动重试，报错时会提示先用 `list`/GUI 核对。并发上限为尽力检查——多进程同时派发的瞬间可能超出。
 - 本工具不写 ZCode 的其他数据文件；开关文件仅 setup 显式写入（已存在时以它为准，`--api-port` 冲突报错不覆盖）。
 
+## 需求
+
+1. **ZCode 作 Claude Code 的子代理**（`bin/`、`src/`、`skill/`）：任务派发、运行中补充消息、子代理主动回复父代理、交付最终回复、接续任务、多任务并行，任务在 ZCode GUI 实时可见（见上文「命令」与「重要边界」）。
+2. 补丁版工具链（`patch/`）回答四个业务问题（结论与证据见 [docs/report/zcode-patched-build-compat.md](docs/report/zcode-patched-build-compat.md)）：
+
+1. **数据保全**：替换/降级 ZCode 前，用户的登录态、任务历史、技能与配置如何完整备份与恢复（`patch/backup-zcode-data.sh`）。
+2. **补丁构建**：开源源码 + 本地补丁如何构建出可安装的 mac 包，身份怎么选（Preview 并存 vs production 原地替换，默认 Preview）（`patch/build-desktop.sh`）。
+3. **安装与回退**：如何替换/并存/回退 `/Applications` 里的应用且旧包永不丢失（`patch/install-desktop.sh`、`patch/rollback-desktop.sh`——由用户本人在终端直接运行）。
+4. **上游跟随**：上游整批快照同步后，补丁如何低成本跟上并先过降级兼容门检（`patch/sync-upstream.sh`、`patch/verify-migration-checksums.mjs`）。
+
+操作流程照抄 [patch/README.md](patch/README.md)。
+
+## 架构与边界
+
+- 桥接 CLI（`bin/zcode-sub.js` + `src/`，Node ≥ 22、零依赖）：只通过 127.0.0.1 上的 ZCode 本机任务 API 与 ZCode 通信；`reply_to_parent` 由 ZCode 拉起的 `zcode-sub mcp` 直写本地信箱；`skill/zcode-sub/` 是给 Claude Code 的使用说明。
+- 补丁版工具链（`patch/`，bash + 少量 Node 脚本，无服务、无长期进程）：
+
+- `patch/backup-zcode-data.sh` — 用户数据目录（~/.zcode）备份（SQLite 在线备份 + manifest/sha256）
+- `patch/build-desktop.sh` — mac arm64 构建（Node/pnpm 工具链自举到 `.toolchains/`，不动全局）
+- `patch/install-desktop.sh` / `patch/rollback-desktop.sh` — 应用目录（/Applications）安装替换与回退（用户本人运行；旧包只 mv 不删）
+- `patch/sync-upstream.sh` — fetch 上游 → `local/patched-<短SHA>` 分支 → 按 `patch/series` 净提交 cherry-pick → typecheck/lint
+- `patch/verify-migration-checksums.mjs` — 迁移账本 checksum 门检（替换安装前必跑）
+- `patch/series` — 补丁净提交清单（SHA 行 / `#` 注释 / `!` 自定义校验行）
+- `docs/` — spec 与调查报告（[索引](docs/index.md)）；`engineering-context/` — 代码事实层与上游 ZCode 的依赖声明
+
+工具链边界：不在本仓修改上游 ZCode 源码（补丁提交在 ZCode 仓分支上开发，经 `patch/series` 固化）；不做数据自动回滚（备份与校验有，覆盖用户数据的动作不代做）；不做 Windows/Linux 构建；不做签名与公证。
+
 ## 开发
 
 ```bash
@@ -81,3 +108,5 @@ scripts/smoke-real-zcode.sh    # 真机冒烟（需 ZCode 已装补丁并完成�
 ```
 
 文档：spec `docs/spec/2026-10-27-zcode-sub-bridge-eng-spec.md`（含 v1→v2 方案变更决策记录）、coding plan `docs/plan/`、覆盖度 `docs/report/测试场景覆盖度.md`。
+
+本项目采用 dw-workflow（见 `AGENTS.md` 标记块）：改动在 `.worktrees/` 下独立 worktree 进行，合并回 main。

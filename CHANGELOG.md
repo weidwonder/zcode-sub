@@ -1,5 +1,7 @@
 # Changelog
 
+本仓的对外可见变化记录。分类是闭集：`不兼容` / `新增` / `变更` / `修复` / `内部`。
+
 ## 未发布
 
 ### 不兼容
@@ -11,6 +13,9 @@
 ### 新增
 
 - `zcode-sub` v0.2.0：契约 v2 全套——CLI（setup/run/send/wait/result/resume/stop/list/mcp）、API 客户端（`src/api.js`：createTask/sendMessage/stopTask/getTask/getEvents 长轮询）、多任务 name→taskId 映射、MCP `reply_to_parent` 直写信箱、假 ZCode v2 全链路测试、真机冒烟脚本 v2、Claude Code Skill 与 README。
+- 迁移 checksum 门检工具 `patch/verify-migration-checksums.mjs`（上游更新后替换安装前重跑，账本超集或 checksum 漂移即非零退出）。
+- ZCode 补丁版工具链五脚本（`patch/backup-zcode-data.sh`、`build-desktop.sh`、`install-desktop.sh`、`rollback-desktop.sh`、`sync-upstream.sh`）与流程文档 `patch/README.md`——数据保全、mac arm64 构建（Preview/production 双身份）、安装替换与回滚、上游跟随。
+- 兼容性调查报告 `docs/report/zcode-patched-build-compat.md`——3.16.2 打开 3.16.3 数据安全（逐条 checksum 证据）、登录态与签名无关、强更门实测状态、Preview 并存推荐方案。
 
 ### 变更
 
@@ -32,6 +37,7 @@
 - （A 最终形状对齐轮）工作区族错误七端点统一分流（api.js workspaceApiError：create/messages/stop/get/events/models/:id/model 一致映射——新增 409 workspace_open_blocked→exit 3「请先处理 ZCode 窗口」，open_timeout 文案注明可直接重试）；上游 400 invalid_model_selection（provider-not-found 等）→ zcode_model_invalid exit 1 透传原因并提示 models 查可选值；models 文本表加「默认档位」列（defaultThoughtLevel）；input.steered 措辞改「旧版 ZCode 可能不出现」（A 已修 schema、修复版起恢复）；SKILL/README/spec 码表逐条对齐（含 workspace_open_blocked、invalid_model_selection）。
 - （六轮评审）wait 的 resync 分支改为游标显式归 0 后继续跟随（A 最终语义：重启/缓冲释放后 after>0 返回 resync、after=0 重新跟随——只提示一次不再每次报溢出；updateTask 加 resetEventsSeq 标志支持显式重置、普通推进仍取 max）；--steer 旧口径清理（USAGE/README 边界节/spec 场景 3 与 D-v2-05 括注统一为「原生引导、步骤结束时注入；立即改向用 --interrupt」，steer.injected 文案去「打断生效」）；--timeout 坏值（0/非数值）报用法错误；禁区补「不对用户正在 GUI 操作的对话 --steer 或 --interrupt」；Skill 前提改工作区自动打开（含标签页副作用说明）、wait 分流改逐行处理（同批 reply+终态不二选一）、码表拆行并补 account-connection-unavailable 可在账号恢复后原样重试；ZCODE_SUB_INTERRUPT_TIMEOUT_MS 进 USAGE 环境变量表与 spec Cheat Sheet；台账补齐。
 - （真机复测轮）修 `send --interrupt` 截断轮事件重放：确认回空闲后、发消息前读增量事件页（waitMs=0）把持久游标 eventsSeq 推进到 nextSeq——截断轮终态事件不再出现在后续新起的 wait（读取失败不阻断发送，stderr 提示；正在挂起的旧 wait 仍可能先见到，Skill 已注明继续 wait 不要误收尾）。
+- `patch/series` 固化 ZCode 补丁的三个净提交（与上游 PR 同一组）并加契约测试校验行，`sync-upstream.sh` 从此会实际 cherry-pick 补丁。
 
 ### 修复
 
@@ -43,3 +49,4 @@
 ### 内部
 
 - engineering-context：ZCode 依赖声明更新为 v2 接口清单；bots-webhook 事实卡保留 v1 会话语义结论（决策记录考古用）。
+- spec（`docs/spec/2026-10-27-zcode-sub-patch-tooling-eng-spec.md`）、ZCode 上游事实卡（`engineering-context/dependencies/ZCode/`）与依赖声明（`engineering-context/dependencies/ZCode.md`）。

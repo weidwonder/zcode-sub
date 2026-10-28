@@ -28,10 +28,10 @@
 |---|---|---|---|---|---|---|
 | 1 | capability-mapping | 【能力名，如 背单词记录】 | 【repo :: POST /v2/xxx；最小 schema 只写 POST /v2/xxx】 | scored | 1 | |
 | 2 | deprecated-trap | 【废弃接口，如 POST /v1/xxx】 | deprecated | blocking | 1 | |
-| 3 | requirement-reachable | 【需求真相源，如 docs/index.md 或 README.md#需求】 | ≤2 跳 | blocking | 1 | |
-| 4 | architecture-reachable | 【架构真相源，如 README.md#架构与边界】 | ≤2 跳 | blocking | 1 | |
-| 5 | implementation-usable | 【架构节，如 README.md#架构与边界】 | usable | scored | 2 | |
-| 6 | rationale-traceable | 【索引路径，默认 docs/index.md】 | 全部非空 | scored | 2 | |
+| 3 | requirement-reachable | README.md#需求 | ≤2 跳 | blocking | 1 | |
+| 4 | architecture-reachable | README.md#架构与边界 | ≤2 跳 | blocking | 1 | |
+| 5 | implementation-usable | README.md#架构与边界 | usable | scored | 2 | |
+| 6 | rationale-traceable | docs/index.md | 全部非空 | scored | 2 | |
 
 ## 基线（棘轮）
 > 已知、暂时容忍的失败项（按 # 列）。规则：**只许变短**——基线外新增失败即 RED；基线内已修复也 RED（强制删除该条）。
