@@ -185,7 +185,7 @@ export async function createTask(config, { workspacePath, prompt, title, mode, m
   if (status === 400 && payload?.error === "invalid_model_selection") {
     throw new ApiError(
       "zcode_model_invalid",
-      `zcode_model_invalid: 上游拒绝了模型选择（${typeof payload.message === "string" && payload.message ? payload.message : "invalid_model_selection"}）——用 zcode-sub models 查看可选值。`,
+      `zcode_model_invalid: 上游拒绝了模型选择（${typeof payload.message === "string" && payload.message ? payload.message : "invalid_model_selection"}）——用 zcode-sub models --cwd <工作区绝对路径> 查看可选值。`,
       { exitCode: 1, status },
     );
   }
@@ -237,7 +237,7 @@ export async function setModel(config, taskId, modelSelection, workspacePath, cl
   if (status === 400 && payload?.error === "invalid_model_selection") {
     throw new ApiError(
       "zcode_model_invalid",
-      `zcode_model_invalid: 上游拒绝了模型选择（${typeof payload.message === "string" && payload.message ? payload.message : "invalid_model_selection"}）——用 zcode-sub models 查看可选值。`,
+      `zcode_model_invalid: 上游拒绝了模型选择（${typeof payload.message === "string" && payload.message ? payload.message : "invalid_model_selection"}）——用 zcode-sub models --cwd <工作区绝对路径> 查看可选值。`,
       { exitCode: 1, status },
     );
   }

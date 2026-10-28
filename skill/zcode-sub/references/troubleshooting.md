@@ -5,7 +5,7 @@
 | 码 | 特征 | 含义与动作 |
 |---|---|---|
 | 1 | 用法/配置类：用法错误 / `zcode_not_configured` / `zcode_task_not_found` / `zcode_create_failed` / EACCES | 用法见 `zcode-sub --help`；未配置先 setup；本地任务名用 list 查 |
-| 1 | 模型/工作区类：`zcode_model_invalid` / `zcode_workspace_path_invalid` | `zcode_model_invalid` 本地报错已列出可选模型/档位，按它改 --model/--thought；上游拒绝时 message 为 provider-not-found / model-not-found / reasoning-level-not-supported → 用 `zcode-sub models` 查可选值；message 为 account-connection-unavailable = 该模型账号未在 ZCode 连接——告知用户去连接或换模型，账号恢复后可原样重试，不要在未恢复时空转重试；`zcode_workspace_path_invalid` = 检查 `--cwd` 是本机存在的目录绝对路径（不带 `~`、不用相对路径），改正后重跑 |
+| 1 | 模型/工作区类：`zcode_model_invalid` / `zcode_workspace_path_invalid` | `zcode_model_invalid` 本地报错已列出可选模型/档位，按它改 --model/--thought；上游拒绝时 message 为 provider-not-found / model-not-found / reasoning-level-not-supported → 用 `zcode-sub models --cwd <工作区绝对路径>` 查可选值；message 为 account-connection-unavailable = 该模型账号未在 ZCode 连接——告知用户去连接或换模型，账号恢复后可原样重试，不要在未恢复时空转重试；`zcode_workspace_path_invalid` = 检查 `--cwd` 是本机存在的目录绝对路径（不带 `~`、不用相对路径），改正后重跑 |
 | 2 | stdout `TIMEOUT` | wait 本轮无新事件 → 再 wait 一次 |
 | 2 | stderr `zcode_api_unreachable` | ZCode 没开或重启中 → 读 setup.md |
 | 3 | `zcode_workspace_not_open` | 工作区未打开/为远端→请用户在 GUI 打开；「打开该工作区超时」→ 可直接重试（打开请求可能仍在进行），反复超时再请用户手动打开；「禁止打开工作区」→ ZCode 在强制升级等状态，请用户先处理 ZCode 窗口 |

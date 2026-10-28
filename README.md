@@ -111,7 +111,7 @@ ln -s "$(pwd)/skill/zcode-sub" ~/.claude/skills/zcode-sub    # 或把整个目�
 - **按模型派发/换模型**：可用值先 `zcode-sub models` 查（带与 run 相同的 `--cwd`）；`run --model <providerId/modelId> [--thought <档位>]` 派发时指定（config 可设 `defaultModel` 兜底，不传用 ZCode 默认），`zcode-sub model <name> …` 给已派发任务换（下一轮生效，运行中允许）。非法值本地预校验报 `zcode_model_invalid`（exit 1）并列出可选值。**未指定 --thought 时自动用默认档位**（max 优先；其次模型 defaultThoughtLevel；再取列表末档），实际档位打印在 stderr。
 - **改向的两种手段**：`--steer` 注入时机靠后但保留上文；`--interrupt` 立即截断（未完成内容丢弃），与 `--steer`/`--queue` 互斥，等待上限 `ZCODE_SUB_INTERRUPT_TIMEOUT_MS`（默认 15s，超限消息不发送、exit 4）。
 
-**退出码**：`1` 用法错误（含未知参数、未配置、本地无此任务、EACCES、工作区路径非法、模型选择被拒绝——报错里带原因，用 `zcode-sub models` 查可选值）；`2` 连不上本机任务 API 或 wait 超时；`3` 工作区问题（未打开/远端；自动打开超时可直接重试；ZCode 禁止打开时先处理 ZCode 窗口）；`4` 按 taskId 的请求失败（含任务被删）或运行中 resume 被拒；`5` token/Host 校验失败；`7` 任务名非法或重名（名字仅 `[A-Za-z0-9._-]+`）；`8` 未结束任务数达上限（默认 4）。完整错误码闭集与事件类型清单以 spec §3 为准（`docs/spec/2026-10-27-zcode-sub-bridge-eng-spec.md`）。
+**退出码**：`1` 用法错误（含未知参数、未配置、本地无此任务、EACCES、工作区路径非法、模型选择被拒绝——报错里带原因，用 `zcode-sub models --cwd <绝对路径>` 查可选值）；`2` 连不上本机任务 API 或 wait 超时；`3` 工作区问题（未打开/远端；自动打开超时可直接重试；ZCode 禁止打开时先处理 ZCode 窗口）；`4` 按 taskId 的请求失败（含任务被删）或运行中 resume 被拒；`5` token/Host 校验失败；`7` 任务名非法或重名（名字仅 `[A-Za-z0-9._-]+`）；`8` 未结束任务数达上限（默认 4）。完整错误码闭集与事件类型清单以 spec §3 为准（`docs/spec/2026-10-27-zcode-sub-bridge-eng-spec.md`）。
 
 其他：未知参数按命令白名单报用法错误（exit 1，不静默忽略）。
 
