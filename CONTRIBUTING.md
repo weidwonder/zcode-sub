@@ -1,12 +1,12 @@
 # 贡献指南
 
-感谢关注 zcode-sub。仓库很小，参与门槛也低。
+感谢关注 zcode-sub。仓库很小，参与门槛也低。参与本项目即同意遵守[行为准则](CODE_OF_CONDUCT.md)；安全问题按 [SECURITY.md](SECURITY.md) 私下报告，不要开公开 issue。
 
 ## 报问题
 
 开 [GitHub Issue](https://github.com/weidwonder/zcode-sub/issues)，带上下文：
 
-- **bug**：复现步骤、涉及命令与退出码；可设 `ZCODE_SUB_DEBUG=1` 重跑一次，附 `~/.zcode-sub/debug.log` 相关段落（日志不含 token 与任务正文，附前请再自查一遍）。
+- **bug**：用 bug 模板提交（新建 Issue 时选「Bug report」），模板会请你附上版本、setup 输出、复现步骤与调试日志。
 - **功能建议**：先说清使用场景（想让子代理做什么、现在卡在哪一步）。
 
 ## 本地开发

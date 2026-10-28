@@ -2,7 +2,7 @@
 # 一行一个提交 SHA，按应用顺序排列；'#' 开头与空行忽略。
 # '! <命令>' 行：cherry-pick 全部通过后要跑的自定义校验命令（如补丁契约测试）。
 # 净提交来自 ZCode 仓 feat/local-task-api 分支（从上游 main 3c5b2276 整理出的三个干净提交，
-# 不含 v1 webhook 引入与 revert 对冲对、不含 chore(local-dw) 过程文档提交；同一组提交也是上游 PR 的内容）。
+# 不含 v1 webhook 引入与 revert 对冲对、不含 chore(local-dw) 过程文档提交）；该分支公开在 https://github.com/weidwonder/ZCode 。
 # fix(shared): accept inputPresentation on turn.steerQueued events
 76dc288b
 # feat(services): sendPrompt accepts requestedDelivery for GUI-parity steering

@@ -55,6 +55,7 @@ const USAGE = `zcode-sub 用法（把 ZCode 桌面版当子代理）：
   ZCODE_SUB_HOME          状态目录（任务分片与信箱）；HOME 被重定向的环境必须显式设置
   ZCODE_DATA_BASE_DIR     ZCode 数据目录基目录（从中找开关文件 <该目录>/.zcode/v2/local-task-api.json）
   ZCODE_SUB_MAX_RUNNING   同时未结束任务数上限（默认 4，尽力检查）
+  ZCODE_SUB_INTERRUPT_TIMEOUT_MS  send --interrupt 等任务回空闲的上限（默认 15000 毫秒，超限消息不发送）
   ZCODE_SUB_DEBUG=1       打请求/响应摘要日志（debug.log，不含 token 与任务正文）`;
 
 // 版本唯一出处是 package.json（与 CHANGELOG / Skill metadata.version 同步）。

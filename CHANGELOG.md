@@ -21,6 +21,7 @@
 
 ### 新增
 
+- 社区健康文件：`SECURITY.md`（经 GitHub private vulnerability reporting 私下报告；范围含 token 处理、本机回环 API、开关文件权限、默认 yolo，ZCode 本身问题指向上游）、`CODE_OF_CONDUCT.md`（Contributor Covenant 2.1 原文，执行联系人 weidwonder@gmail.com）、`.github/ISSUE_TEMPLATE/bug_report.yml`（必填 ZCode 版本、`zcode-sub --version`、打码后的 `zcode-sub setup` 输出、macOS 版本、复现步骤、期望/实际）与 `config.yml`（安全问题指向私下报告）；`CONTRIBUTING.md` 补行为准则与安全报告指引。
 - `zcode-sub` v0.2.0：契约 v2 全套——CLI（setup/run/send/wait/result/resume/stop/list/mcp）、API 客户端（`src/api.js`：createTask/sendMessage/stopTask/getTask/getEvents 长轮询）、多任务 name→taskId 映射、MCP `reply_to_parent` 直写信箱、假 ZCode v2 全链路测试、真机冒烟脚本 v2、Claude Code Skill 与 README。
 - 迁移 checksum 门检工具 `patch/verify-migration-checksums.mjs`（上游更新后替换安装前重跑，账本超集或 checksum 漂移即非零退出）。
 - ZCode 补丁版工具链五脚本（`patch/backup-zcode-data.sh`、`build-desktop.sh`、`install-desktop.sh`、`rollback-desktop.sh`、`sync-upstream.sh`）与流程文档 `patch/README.md`——数据保全、mac arm64 构建（Preview/production 双身份）、安装替换与回滚、上游跟随。
@@ -28,6 +29,7 @@
 
 ### 变更
 
+- README（中英两份）重写：首屏改为副标题 +「为什么用它」（首条为把重活交给 ZCode 绑定的模型、分担 Claude 用量）+ 白话版工作原理，内部术语首次出现给解释；安装改为完整路径（clone fork 分支 `weidwonder/ZCode@feat/local-task-api` → 备份 → 构建 → 安装 ZCode Preview → `zcode-sub setup` 看到「✓ 本机任务 API 正常」），删去「计划提交上游」，改为如实说明补丁维护在 fork 分支；新增「运行中改向」（`--steer` / `--interrupt` 最小示例与对应事件）、退出码表（码/含义/怎么办）、「限制」、「问题与建议」小节；`## 需求`、`## 架构与边界` 两个锚点标题保留。
 - 并发派发上限：同时非终态任务数默认 4（`ZCODE_SUB_MAX_RUNNING` 调整，尽力检查——多进程同时派发瞬间可能超出），超限 `zcode_too_many_running`（退出码 8）；并发额度刷新遇 404（任务已在 GUI 删除）时本地置 `error` 终态自动释放额度。
 - 任务登记由单文件 tasks.json 改为每任务分片 `tasks/<name>.json`（`wx` 独占创建防同名竞态；并发丢登记修复；损坏分片重登记时备份 `.corrupt-<ts>` 后覆盖）。
 - 所有按 taskId 的 API 请求携带 workspacePath（ZCode 重启丢归属表时据此路由）；wait 处理事件序号回退。
@@ -46,10 +48,12 @@
 - （A 最终形状对齐轮）工作区族错误七端点统一分流（api.js workspaceApiError：create/messages/stop/get/events/models/:id/model 一致映射——新增 409 workspace_open_blocked→exit 3「请先处理 ZCode 窗口」，open_timeout 文案注明可直接重试）；上游 400 invalid_model_selection（provider-not-found 等）→ zcode_model_invalid exit 1 透传原因并提示 models 查可选值；models 文本表加「默认档位」列（defaultThoughtLevel）；input.steered 措辞改「旧版 ZCode 可能不出现」（A 已修 schema、修复版起恢复）；SKILL/README/spec 码表逐条对齐（含 workspace_open_blocked、invalid_model_selection）。
 - （六轮评审）wait 的 resync 分支改为游标显式归 0 后继续跟随（A 最终语义：重启/缓冲释放后 after>0 返回 resync、after=0 重新跟随——只提示一次不再每次报溢出；updateTask 加 resetEventsSeq 标志支持显式重置、普通推进仍取 max）；--steer 旧口径清理（USAGE/README 边界节/spec 场景 3 与 D-v2-05 括注统一为「原生引导、步骤结束时注入；立即改向用 --interrupt」，steer.injected 文案去「打断生效」）；--timeout 坏值（0/非数值）报用法错误；禁区补「不对用户正在 GUI 操作的对话 --steer 或 --interrupt」；Skill 前提改工作区自动打开（含标签页副作用说明）、wait 分流改逐行处理（同批 reply+终态不二选一）、码表拆行并补 account-connection-unavailable 可在账号恢复后原样重试；ZCODE_SUB_INTERRUPT_TIMEOUT_MS 进 USAGE 环境变量表与 spec Cheat Sheet；台账补齐。
 - （真机复测轮）修 `send --interrupt` 截断轮事件重放：确认回空闲后、发消息前读增量事件页（waitMs=0）把持久游标 eventsSeq 推进到 nextSeq——截断轮终态事件不再出现在后续新起的 wait（读取失败不阻断发送，stderr 提示；正在挂起的旧 wait 仍可能先见到，Skill 已注明继续 wait 不要误收尾）。
-- `patch/series` 固化 ZCode 补丁的三个净提交（与上游 PR 同一组）并加契约测试校验行，`sync-upstream.sh` 从此会实际 cherry-pick 补丁。
+- `patch/series` 固化 ZCode 补丁的三个净提交（即 fork 分支 `weidwonder/ZCode@feat/local-task-api` 上的三个提交）并加契约测试校验行，`sync-upstream.sh` 从此会实际 cherry-pick 补丁。
 
 ### 修复
 
+- `zcode-sub --help` 环境变量列表补上 `ZCODE_SUB_INTERRUPT_TIMEOUT_MS`（`send --interrupt` 等任务回空闲的上限，默认 15000 毫秒），与 README 配置表一致。
+- `patch/README.md` 流程一的验证步骤改为用 `zcode-sub setup` 看到「✓ 本机任务 API 正常」（原写「Webhook Bot 功能可用」，对应已删除的 v1 传输层）；流程一开头补「源码来源」：clone fork 分支 `weidwonder/ZCode@feat/local-task-api`；流程二补前提——从 fork clone 的源码目录先把 `origin` 指回上游再跑 `sync-upstream.sh`。`patch/series` 注释与 ZCode 依赖声明里的「上游 PR」说法同步改为补丁维护在 fork 分支。
 - POST 请求不再自动重试（除上条带幂等键的 createTask）：写入失败即报 `zcode_api_unreachable` 并提示「任务可能已创建，先用 list / GUI 核对」（防双建任务）；GET 保留一次重试。
 - `getEvents` 对 HTTP ≥400 统一抛 `zcode_send_failed`（此前 404 以 200 语义 payload 返回）。
 - 新增 `ZCODE_SUB_DEBUG=1` 请求/响应摘要日志（debug.log，不含 token 与 prompt 正文）。
