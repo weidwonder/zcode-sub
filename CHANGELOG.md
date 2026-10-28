@@ -53,7 +53,7 @@
 ### 修复
 
 - `zcode-sub --help` 环境变量列表补上 `ZCODE_SUB_INTERRUPT_TIMEOUT_MS`（`send --interrupt` 等任务回空闲的上限，默认 15000 毫秒），与 README 配置表一致。
-- `patch/README.md` 流程一的验证步骤改为用 `zcode-sub setup` 看到「✓ 本机任务 API 正常」（原写「Webhook Bot 功能可用」，对应已删除的 v1 传输层）；流程一开头补「源码来源」：clone fork 分支，或在上游源码上 fetch 补丁提交后用 `sync-upstream.sh` 打补丁。`patch/series` 注释与 ZCode 依赖声明里的「上游 PR」说法同步改为补丁维护在 fork 分支。
+- `patch/README.md` 流程一的验证步骤改为用 `zcode-sub setup` 看到「✓ 本机任务 API 正常」（原写「Webhook Bot 功能可用」，对应已删除的 v1 传输层）；流程一开头补「源码来源」：clone fork 分支 `weidwonder/ZCode@feat/local-task-api`；流程二补前提——从 fork clone 的源码目录先把 `origin` 指回上游再跑 `sync-upstream.sh`。`patch/series` 注释与 ZCode 依赖声明里的「上游 PR」说法同步改为补丁维护在 fork 分支。
 - POST 请求不再自动重试（除上条带幂等键的 createTask）：写入失败即报 `zcode_api_unreachable` 并提示「任务可能已创建，先用 list / GUI 核对」（防双建任务）；GET 保留一次重试。
 - `getEvents` 对 HTTP ≥400 统一抛 `zcode_send_failed`（此前 404 以 200 语义 payload 返回）。
 - 新增 `ZCODE_SUB_DEBUG=1` 请求/响应摘要日志（debug.log，不含 token 与 prompt 正文）。
