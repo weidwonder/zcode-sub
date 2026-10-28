@@ -110,6 +110,27 @@ test("无参数打印用法（exit 0）", async () => {
   assert.match(result.stdout, /zcode-sub mcp/u);
 });
 
+test("未知参数报错（exit 1）：list 不收 --bogus；send 不收 --json；flag 校验先于任务查找", async () => {
+  const list = await runCli(["list", "--bogus"]);
+  assert.equal(list.status, 1);
+  assert.match(list.stderr, /不认识的参数 --bogus/u);
+
+  const send = await runCli(["send", "x", "y", "--json"]);
+  assert.equal(send.status, 1);
+  assert.match(send.stderr, /不认识的参数 --json/u);
+  assert.ok(!send.stderr.includes("zcode_task_not_found"), "flag 校验应在任务查找之前拦下");
+});
+
+test("--version：打印 zcode-sub <版本号>（exit 0）；-v 不响应", async () => {
+  const result = await runCli(["--version"]);
+  assert.equal(result.status, 0);
+  assert.match(result.stdout, /^zcode-sub \d+\.\d+\.\d+\n$/u);
+
+  const vShort = await runCli(["-v"]);
+  assert.equal(vShort.status, 1);
+  assert.match(vShort.stdout, /zcode-sub 用法/u, "-v 应按未知命令走用法打印");
+});
+
 test("setup：开关文件不存在 → 生成（0600/enabled/port/64hex token）、health 通过、打印 MCP 片段", async () => {
   const result = await runCli(["setup", "--api-port", String(setupFake.port)], {
     ZCODE_SUB_HOME: setupHomeA,
@@ -421,6 +442,15 @@ test("run：mode 解析——默认 yolo；--mode plan 覆盖；--mode 非法 ex
   );
 });
 
+test("run：--model 明确报尚未支持（exit 1），在建任务之前拦下不触上游", async () => {
+  const callsBefore = fake.calls.length;
+  const result = await runCli(["run", "带模型参数的任务", "--cwd", "/tmp", "--model", "glm-5"]);
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /--model 尚未支持/u);
+  // 报错发生在任何 API 调用之前：不建任务、不留孤儿对话（--cwd /tmp 即可，不依赖真实工作区）
+  assert.equal(fake.calls.length, callsBefore, "不应产生任何新的 API 调用");
+});
+
 test("run：config.defaultMode=plan 生效；--mode 优先于 config；非法 defaultMode 忽略按 yolo 并提示", async () => {
   const modeEnv = { ZCODE_SUB_HOME: modeHome };
 
@@ -571,11 +601,11 @@ test("wait 打印 steer 注入结果（injected 与 fellBack）；steer 事件�
   assert.match(steered.stdout, /投递结果：steered/u);
   assert.match(steered.stdout, /ℹ steered 仅为受理引导；注入结果以事件流为准（wait 可见 steer.injected \/ steer.fellBack）/u);
 
-  // 2) 注入成功：wait 打印投影出的 input.steered 与 steer.injected
+  // 2) 注入成功：wait 打印投影出的 input.steered（commandId 对上本地受理记录 →「你的引导已受理」）与 steer.injected
   fake.settleSteer(taskId, "injected");
   const injected = await runCli(["wait", "steer-1", "--timeout", "5"]);
   assert.equal(injected.status, 0, injected.stderr);
-  assert.match(injected.stdout, /\[input\.steered\] 已受理引导（commandId=cmd-\d+）；注入结果以事件流为准/u);
+  assert.match(injected.stdout, /\[input\.steered\] 你的引导已受理（commandId=cmd-\d+）；注入结果以事件流为准/u);
   assert.match(injected.stdout, /\[steer\.injected\] 引导已注入当前轮（打断生效）/u);
 
   // 3) 降级/拒绝：wait 打印 steer.fellBack 并带原因
@@ -587,9 +617,33 @@ test("wait 打印 steer 注入结果（injected 与 fellBack）；steer 事件�
   assert.equal(fellBack.status, 0, fellBack.stderr);
   assert.match(fellBack.stdout, /\[steer\.fellBack\] 引导被降级\/拒绝，原因：turn_ended——消息将按排队处理或需重发/u);
 
-  // 4) 三种 steer 事件只打印，不参与 lastStatus 推导（终态仍只认 turn.completed/turn.failed）
+  // 4) GUI 侧发起的引导：commandId 不在本 CLI 的受理记录里 → 标「来自 GUI 侧的引导」
+  fake.emitEvent(taskId, "input.steered", { commandId: "cmd-gui-9" });
+  const gui = await runCli(["wait", "steer-1", "--timeout", "5"]);
+  assert.equal(gui.status, 0, gui.stderr);
+  assert.match(gui.stdout, /\[input\.steered\] 来自 GUI 侧的引导（commandId=cmd-gui-9）/u);
+
+  // 5) 三种 steer 事件只打印，不参与 lastStatus 推导（终态仍只认 turn.completed/turn.failed）
   assert.equal(loadTasks(home).tasks["steer-1"].lastStatus, "dispatched");
   settle("steer-1");
+});
+
+test("send：body 带幂等键；空闲 --steer 应答 sent", async () => {
+  await dispatchTask("n1");
+
+  // 空闲任务收到 --steer：A 侧按实际去向应答 sent（不打印「仅为受理」提示）
+  const result = await runCli(["send", "n1", "话", "--steer"]);
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /投递结果：sent/u);
+  assert.ok(!result.stdout.includes("仅为受理"), `空闲 steer 应答 sent，不应有受理提示：${result.stdout}`);
+
+  // send 生成幂等键（"zsub-"+UUID，总长 41）并随 messages body 上送
+  const messagesCalls = fake.calls.filter((call) => call.url.split("?")[0].endsWith("/messages"));
+  const lastMessages = messagesCalls.at(-1);
+  assert.ok(lastMessages, "应有 messages 请求");
+  assert.match(lastMessages.body.clientRequestId, /^zsub-/u);
+  assert.equal(lastMessages.body.clientRequestId.length, 41, "幂等键应为 zsub-（5）+ UUID（36）= 41 字符");
+  settle("n1");
 });
 
 test("resume：空闲接续 sent；运行中拒绝（exit 4 busy_for_resume）", async () => {
@@ -925,13 +979,16 @@ test("forgetOwnership：带 workspacePath 可按工作区重绑成功；本地 w
   assert.match(mismatch.stderr, /zcode_send_failed/u);
 });
 
-test("unwritableHomeAdvice：ZCODE_SUB_HOME 已设置 → dwc grant；未设置 → 两条 export 与重定向说明", () => {
+test("unwritableHomeAdvice：ZCODE_SUB_HOME 已设置 → dwc grant；未设置 → 变量含义、shim 模板与重定向说明", () => {
   const fromEnv = unwritableHomeAdvice("/var/empty/zcode-sub", true);
   assert.ok(fromEnv.includes("✗ 状态目录不可写：/var/empty/zcode-sub"), fromEnv);
   assert.ok(fromEnv.includes("dwc grant /var/empty/zcode-sub"), fromEnv);
 
   const noEnv = unwritableHomeAdvice("/var/empty", false);
   assert.ok(noEnv.includes("HOME 被重定向"), noEnv);
+  assert.ok(noEnv.includes("ZCODE_DATA_BASE_DIR  ZCode 数据目录基目录"), noEnv, "应解释两个变量各自的含义");
+  assert.ok(noEnv.includes("shim"), noEnv);
+  assert.ok(noEnv.includes('exec /Users/<你的用户名>/projects/zcode-sub/bin/zcode-sub.js "$@"'), noEnv);
   assert.ok(noEnv.includes("export ZCODE_SUB_HOME=/Users/<你的用户名>/.zcode-sub"), noEnv);
   assert.ok(noEnv.includes("export ZCODE_DATA_BASE_DIR=/Users/<你的用户名>"), noEnv);
 });

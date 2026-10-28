@@ -157,11 +157,21 @@ export async function createTask(config, { workspacePath, prompt, title, mode, c
   );
 }
 
-export async function sendMessage(config, taskId, text, delivery = "auto", workspacePath) {
+// 发送消息。clientRequestId 可选（与 createTask 幂等键同口径）：有值时入 body，且网络
+// 失败同键安全重试一次——端点侧短期去重保证同键返回首次应答，不会双投。未传（undefined）
+// 时 body 不得含该键、POST 照旧不重试；传了非法值（如空串）也原样入 body，交端点侧按
+// 1..200 口径校验拒绝。
+export async function sendMessage(config, taskId, text, delivery = "auto", workspacePath, clientRequestId) {
   const { status, payload } = await apiFetch(config, `/api/tasks/${encodeURIComponent(taskId)}/messages`, {
     method: "POST",
     // workspacePath 可选：带上后 A 侧 ZCode 重启丢归属表也能按工作区路由
-    body: { text, delivery, ...(workspacePath ? { workspacePath } : {}) },
+    body: {
+      text,
+      delivery,
+      ...(workspacePath ? { workspacePath } : {}),
+      ...(clientRequestId !== undefined ? { clientRequestId } : {}),
+    },
+    ...(clientRequestId ? { retryOnNetworkError: true } : {}),
   });
   if (status >= 200 && status < 300) return payload;
   throw new ApiError(

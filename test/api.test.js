@@ -168,6 +168,51 @@ test("sendMessage：空闲任务 sent；运行中任务 auto→queued、steer→
   assert.equal(injected.events[0].commandId, steered.commandId, "input.steered 的 commandId 应等于受理应答的");
 });
 
+test("sendMessage clientRequestId：同键重试返回首次应答、不双发", async () => {
+  const { taskId } = await createTask(config, { workspacePath: "/w-msg-idem", prompt: "p" });
+  fake.createTaskAlreadyRunning(taskId); // queue 场景（running + auto→queued）
+
+  const first = await sendMessage(config, taskId, "排队的话", "auto", undefined, "req-msg-dup-1");
+  assert.equal(first.delivery, "queued");
+  assert.match(first.commandId, /^cmd-\d+$/u);
+  const second = await sendMessage(config, taskId, "排队的话", "auto", undefined, "req-msg-dup-1");
+  assert.deepEqual(second, first, "同 clientRequestId 二次发送应回首次应答（同 delivery、同 commandId 原值）");
+
+  const page = await getEvents(config, taskId, 0, 0);
+  assert.equal(
+    page.events.filter((event) => event.type === "input.queued").length,
+    1,
+    `同键两次发送不得双投：${JSON.stringify(page.events.map((event) => event.type))}`,
+  );
+});
+
+test("sendMessage clientRequestId 非法：超 200 字符与空串 → 400 zcode_send_failed（exit 4）", async () => {
+  const { taskId } = await createTask(config, { workspacePath: "/w-msg-badid", prompt: "p" });
+  // 超长（201 字符，出 1..200 窗口）
+  await assert.rejects(
+    () => sendMessage(config, taskId, "x", "auto", undefined, "r".repeat(201)),
+    (error) => error.code === "zcode_send_failed" && error.exitCode === 4 && error.status === 400,
+  );
+  // 空串：api.js 层原样带进 body（!== undefined 判定），由端点按同口径判 400
+  await assert.rejects(
+    () => sendMessage(config, taskId, "x", "auto", undefined, ""),
+    (error) => error.code === "zcode_send_failed" && error.exitCode === 4 && error.status === 400,
+  );
+});
+
+test("空闲任务 steer → sent、无 steer 事件", async () => {
+  const { taskId } = await createTask(config, { workspacePath: "/w-idle-steer", prompt: "p" });
+  const result = await sendMessage(config, taskId, "x", "steer");
+  assert.deepEqual(result, { delivery: "sent" }, "空闲收到 steer 按实际去向应答 sent（无 commandId）");
+
+  const page = await getEvents(config, taskId, 0, 0);
+  assert.deepEqual(
+    page.events.map((event) => event.type),
+    ["turn.started"],
+    "空闲 steer 不产生任何 steer 事件",
+  );
+});
+
 test("sendMessage/stopTask/getTask/getEvents：任务不存在 → zcode_send_failed（exit 4）", async () => {
   const missing = "00000000-0000-4000-8000-000000000000";
   await assert.rejects(

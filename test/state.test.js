@@ -6,7 +6,7 @@ import { join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { test } from "node:test";
 import { loadConfig, saveConfig, createInitialConfig, updateConfig } from "../src/config.js";
-import { loadTasks, registerTask, updateTask, getTask, listTaskNames } from "../src/tasks.js";
+import { loadTasks, registerTask, updateTask, getTask, listTaskNames, appendSteerCommandId } from "../src/tasks.js";
 import { appendReplyLine, readMailboxLines, readCursor, writeCursor } from "../src/mailbox.js";
 import { assertValidName } from "../src/home.js";
 
@@ -344,6 +344,32 @@ test("同名合法分片（内容为别的任务）：registerTask 零退避立�
     // 原分片分毫不动，也不产生 .corrupt-* 备份
     assert.equal(getTask(home, "t1").taskId, "task-other");
     assert.deepEqual(readdirSync(dir).filter((f) => f.startsWith("t1.json.corrupt-")), []);
+  } finally {
+    rmSync(home, { recursive: true, force: true });
+  }
+});
+
+test("appendSteerCommandId：追加、幂等、无分片/坏分片返回 null 不写", () => {
+  const home = tempHome();
+  try {
+    // 无分片 → null 且不建 tasks 目录（不做任何写副作用）
+    assert.equal(appendSteerCommandId(home, "t1", "cmd-1"), null);
+    assert.equal(existsSync(join(home, "tasks")), false);
+
+    // 正常登记后追加两次 → 读回有序列表；重复追加幂等
+    registerTask(home, "t1", { taskId: "task-1", workspacePath: "/tmp/ws" });
+    assert.ok(appendSteerCommandId(home, "t1", "cmd-1"), "正常分片应返回 record");
+    appendSteerCommandId(home, "t1", "cmd-2");
+    assert.deepEqual(getTask(home, "t1").steerCommandIds, ["cmd-1", "cmd-2"]);
+    appendSteerCommandId(home, "t1", "cmd-1");
+    assert.deepEqual(getTask(home, "t1").steerCommandIds, ["cmd-1", "cmd-2"], "同一 commandId 不得重复追加");
+
+    // 坏分片 → null，且不产生 .corrupt-* 备份、坏文件内容不动（无写副作用）
+    const dir = join(home, "tasks");
+    writeFileSync(shardPath(home, "t1"), "{broken", "utf8");
+    assert.equal(appendSteerCommandId(home, "t1", "cmd-3"), null);
+    assert.deepEqual(readdirSync(dir).filter((f) => f.startsWith("t1.json.corrupt-")), []);
+    assert.equal(readFileSync(shardPath(home, "t1"), "utf8"), "{broken");
   } finally {
     rmSync(home, { recursive: true, force: true });
   }

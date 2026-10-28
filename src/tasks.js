@@ -4,11 +4,12 @@ import { assertValidName, isValidName } from "./home.js";
 import { atomicWriteJson } from "./config.js";
 
 // 任务登记表：每任务一分片 <home>/tasks/<name>.json，
-// 内容 { taskId, workspacePath, createdAt, lastStatus, eventsSeq, clientRequestId? }。
+// 内容 { taskId, workspacePath, createdAt, lastStatus, eventsSeq, clientRequestId?, steerCommandIds? }。
 // 分片替代旧单文件 tasks.json 的读改写——旧实现在多进程并发登记时会互相
 // 覆盖丢登记，现在登记走独占创建（wx），同名竞态恰好只有一方成功。
 // taskId 指向 ZCode 本机任务 API 的任务；eventsSeq 只反映本机已见的事件数；
-// clientRequestId 是派发时的幂等键（有才存），供端点侧短期去重对账。
+// clientRequestId 是派发时的幂等键（有才存），供端点侧短期去重对账；
+// steerCommandIds?（可选，本 CLI 的 steer 受理对账键列表）。
 
 function tasksDirOf(home) {
   return join(home, "tasks");
@@ -150,6 +151,22 @@ export function updateTask(home, name, patch) {
   const record = shard.record;
   if (patch.lastStatus !== undefined) record.lastStatus = patch.lastStatus;
   if (patch.eventsSeq !== undefined) record.eventsSeq = patch.eventsSeq;
+  atomicWriteJson(file, record);
+  return record;
+}
+
+// steer 对账键：本 CLI 每次 --steer 受理的 commandId 记入分片（wait 打印 input.steered 时
+// 据此区分「你的引导」与 GUI 侧引导）。分片缺失/损坏时返回 null 不写（与 updateTask 不同：
+// 这里不做备份副作用）。同一 commandId 幂等不重复追加。
+export function appendSteerCommandId(home, name, commandId) {
+  assertValidName(name);
+  const file = shardFileOf(home, name);
+  const shard = readShard(file);
+  if (!shard.record) return null;
+  const record = shard.record;
+  const ids = Array.isArray(record.steerCommandIds) ? record.steerCommandIds : [];
+  if (ids.includes(commandId)) return record;
+  record.steerCommandIds = [...ids, commandId];
   atomicWriteJson(file, record);
   return record;
 }

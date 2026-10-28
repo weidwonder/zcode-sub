@@ -54,18 +54,18 @@ exec /path/to/zcode-sub/bin/zcode-sub.js "$@"
 | `zcode-sub list [--json]` | 本地任务表（name/taskId/状态） |
 | `zcode-sub mcp` | stdio MCP server（`reply_to_parent`），由 ZCode 拉起 |
 
-退出码：`2` 连不上本机任务 API 或 wait 超时；`3` 工作区未在 ZCode 打开（含远端工作区，409）；`4` 按 taskId 的请求失败（含任务被删）或运行中 resume 被拒；`5` token/Host 校验失败；`7` 任务名非法或重名；`8` 未结束任务数达上限（默认 4，`ZCODE_SUB_MAX_RUNNING` 调整）。任务名仅 `[A-Za-z0-9._-]+`。完整错误码闭集与事件类型清单以 spec §3 为准（`docs/spec/2026-10-27-zcode-sub-bridge-eng-spec.md`）。
+退出码：`1` 用法错误（含未知参数、未配置、本地无此任务、EACCES）；`2` 连不上本机任务 API 或 wait 超时（stdout `TIMEOUT`=超时再等一次；stderr `zcode_api_unreachable`=ZCode 没开）；`3` 工作区未在 ZCode 打开（含远端工作区，409）；`4` 按 taskId 的请求失败（含任务被删）或运行中 resume 被拒；`5` token/Host 校验失败；`7` 任务名非法或重名；`8` 未结束任务数达上限（默认 4，`ZCODE_SUB_MAX_RUNNING` 调整）。任务名仅 `[A-Za-z0-9._-]+`。完整错误码闭集与事件类型清单以 spec §3 为准（`docs/spec/2026-10-27-zcode-sub-bridge-eng-spec.md`）。
 
-诊断：`ZCODE_SUB_DEBUG=1` 时 API 请求/响应摘要追加 `~/.zcode-sub/debug.log`（不含 token 与 prompt 正文）。
+其他：未知参数按命令白名单报用法错误（exit 1，不静默忽略）；`--version` 打印版本号；`--model` 为模型选择预留、传入会明确报尚未支持。诊断：`ZCODE_SUB_DEBUG=1` 时 API 请求/响应摘要追加 `~/.zcode-sub/debug.log`（不含 token 与 prompt 正文）。
 
 ## 重要边界
 
 - **多任务并行有上限**：每次 `run` 在 ZCode 新建一个对话，name→taskId 映射存本地；同时未结束（运行/等待/派发中）的任务数上限默认 4，`ZCODE_SUB_MAX_RUNNING` 可调，超限报 `zcode_too_many_running`。
-- **运行中补充消息**：`send` 默认 `auto`（与 GUI 运行中发送的默认行为一致）；`--steer` = 真打断（ZCode 无法打断时按上游应答降级为 queued）、`--queue` = 强制排队。返回的 `sent`/`queued`/`steered` 与 commandId 按应答如实打印。auto 运行中的去向由会话 follow-up mode 决定（GUI 默认排队）——要即时打断用 `--steer`；`steered` 应答后用 `wait` 看注入结果（`steer.injected`=生效 / `steer.fellBack`=被降级或拒绝，消息将按排队处理或需重发）。
+- **运行中补充消息**：`send` 默认 `auto`（与 GUI 运行中发送的默认行为一致）；`--steer` = 真打断（ZCode 无法打断时按上游应答降级为 queued）、`--queue` = 强制排队；空闲任务的 `--steer` 按实际去向应答 `sent`（等同普通发送）。返回的 `sent`/`queued`/`steered` 与 commandId 按应答如实打印。auto 运行中的去向由会话 follow-up mode 决定（GUI 默认排队）——要即时打断用 `--steer`；`steered` 应答后用 `wait` 看注入结果（`steer.injected`=生效 / `steer.fellBack`=被降级或拒绝，消息将按排队处理或需重发）。wait 打印 `[input.steered]` 时按本地记录对账：`你的引导已受理（commandId=…）` 是你的 `--steer`；`来自 GUI 侧的引导（commandId=…）` 是用户在 GUI 手动引导同一任务。
 - **默认完全访问**：run 默认 mode=yolo（GUI『完全访问』，用户拍板）——派发的子代理不再卡权限确认；`--mode` 或 config `defaultMode` 可改（11 值枚举）。wait 收到 `permission.requested` 仍会提示去 ZCode GUI 处理（本工具不通过 API 批权限；yolo 下上游一般不再发权限请求，处理逻辑保留）。
 - **事件缓冲与重启**：上游每任务事件有界缓冲（500 条），溢出时 wait 收到 `resync` 提示改用 result 轮询；ZCode 重启后事件缓冲清空、序号可能回退，wait 会重置游标继续等待。
 - **终态口径**：`result` 以 `GET /api/tasks/:id` 的 status 为准（idle/error 即终态，lastAssistantText 为最后回复；停止后完成事件文本可为空）。
-- **副作用安全**：建任务请求带 `clientRequestId` 幂等键（同键返回同一 taskId），网络失败同键安全重试一次；其余写入 POST 失败不自动重试，报错时会提示先用 `list`/GUI 核对。并发上限为尽力检查——多进程同时派发的瞬间可能超出。
+- **副作用安全**：建任务与 send/resume 消息请求均带 `clientRequestId` 幂等键（同键返回首次应答），网络失败同键安全重试一次；其余写入 POST 失败不自动重试，报错时会提示先用 `list`/GUI 核对。并发上限为尽力检查——多进程同时派发的瞬间可能超出。
 - 本工具不写 ZCode 的其他数据文件；开关文件仅 setup 显式写入（已存在时以它为准，`--api-port` 冲突报错不覆盖）。
 
 ## 开发

@@ -1,51 +1,42 @@
 # zcode-sub 安装与一次性配置
 
-> 读取条件：仅当 `zcode-sub` 命令不可用、或运行命令报 `zcode_not_configured` / 连不上 ZCode API 时才读本篇；正常使用不需要。
+> 读取条件见 SKILL.md「排障路由」——本篇只在那些情况下读。本工具是外部 CLI，与 ZCode 桌面版同机安装；支持 macOS（其他平台未验证）；面向 Claude Code 使用。
 
 ## 1. 安装 CLI
 
-```bash
-# 已部署本机时：进入 zcode-sub 仓库目录（可由 `which zcode-sub` 反查软链得到，或直接问用户）
-cd <zcode-sub 仓库路径>
-# 仓库来源不确定时：向用户确认仓库地址（本地路径或 URL）后再获取——本工具不发布 npm
-npm link        # 或把仓库 bin/zcode-sub.js 加入 PATH，或直接用绝对路径调用 bin/zcode-sub.js
-zcode-sub --help   # 验证
-```
-
-要求 Node ≥ 22；ZCode 桌面版已装「本机任务 API」补丁（契约 v2）。
-
-## 2. 一次性配置（zcode-sub setup）
+要求 Node ≥ 22。优先「绝对路径 + shim」（`npm link` 会写全局 bin 目录，次选）：
 
 ```bash
-zcode-sub setup
+zcode-sub --version   # 已可用（输出 zcode-sub x.y.z）则跳过安装
+# shim 示例（替换路径后存成可执行文件放 PATH，名字 zcode-sub）：
+#!/bin/bash
+exec /Users/<你的用户名>/projects/zcode-sub/bin/zcode-sub.js "$@"
 ```
 
-它会：
-1. 检查/写入 ZCode 侧开关文件 `~/.zcode/v2/local-task-api.json`（不存在时生成 token、以 0600 权限写入 `{"enabled":true,"port":47821,"token":…}`）——**写完必须重启 ZCode 生效**；已存在则读回 token/端口；
-2. 健康检查本机任务 API（应见「✓ 本机任务 API 正常」）；
-3. 打印把 MCP server 配进 ZCode 的 JSON 片段（写入位置见第 3 节：`~/.zcode/cli/config.json`）。
+仓库来源不确定时向用户确认（本地路径或 URL）——本工具不发布 npm。ZCode 桌面版需已装「本机任务 API」补丁：setup 健康检查报 `zcode_health_mismatch` 且重启过 ZCode 仍不过 → **停下，告知用户这台 ZCode 没装补丁、本工具无法使用**，不要继续尝试。
 
-目录不可写时按 setup 输出的 `dwc grant <目录>` 提示授权后重跑。
+## 2. 一次性配置：zcode-sub setup
+
+- 检查/写开关文件 `<真实家目录>/.zcode/v2/local-task-api.json`（**不是 `$HOME`**——HOME 被重定向的环境先看第 4 节）；写完需重启 ZCode 生效；
+- 健康检查应见「✓ 本机任务 API 正常」；
+- 打印 MCP 配置片段（第 3 节）。
+
+目录不可写：让用户为该目录授权（本座位环境即 `dwc grant <目录>`）后重跑。
 
 ## 3. 把 reply_to_parent 配进 ZCode（否则子代理无法主动汇报，症状是永远收不到 [reply] 行）
 
-将 setup 打印的片段合入 ZCode 的 MCP 配置文件 **`~/.zcode/cli/config.json` 的 `mcp.servers`**（桌面版与 CLI 共用该文件，ZCode 实时加载，无需重启；子代理首次调用工具会弹权限确认；需 `features.mcp` 开启），形如：
+- 将 setup 打印的片段合入 `<真实家目录>/.zcode/cli/config.json` 的 `mcp.servers`（桌面版与 CLI 共用该文件，ZCode 实时加载，无需重启；子代理首次调用工具会弹权限确认；需 `features.mcp` 开启）。**改用户配置文件前先征得用户同意。**
+- 片段中 `command` 用 setup 打印的**绝对路径**（GUI 拉起的进程不一定能在 PATH 找到 node），原样复制，不要手打成 `"node"`。
+- 片段 `env.ZCODE_SUB_HOME` 必须与你跑 zcode-sub 命令时的值一致——不一致时子代理调 reply_to_parent 报「任务不在登记表」，父侧只看到永远收不到 `[reply]`。
+- 子代理在任务文本开头拿到的任务名即 reply_to_parent 的 task 参数。
 
-```json
-{
-  "features": { "mcp": true },
-  "mcp": { "servers": { "zcode-sub": {
-    "type": "stdio",
-    "command": "node",
-    "args": ["/绝对路径/zcode-sub/bin/zcode-sub.js", "mcp"],
-    "env": { "ZCODE_SUB_HOME": "/用户家目录/.zcode-sub" },
-    "enabled": true
-  } } }
-}
-```
+## 4. HOME 被重定向的环境（座位/容器常见）
 
-（以 setup 实际打印为准——里面是当前机器的绝对路径。）配置后重启 ZCode；子代理在任务文本开头拿到的任务名即 `reply_to_parent` 的 task 参数。
+症状任一：`EACCES … /var/empty/...`；`list` 为空但 ZCode GUI 里明明有任务；setup 报「✗ 状态目录不可写且未设置 ZCODE_SUB_HOME」。
 
-## 4. 工作区要求
+解法：设两个环境变量，**每条 zcode-sub 命令都要带**——
 
-`run --cwd` 的工作区必须已在 ZCode 中打开（本地窗口）；未打开或为远端工作区 → 409 `zcode_workspace_not_open`，先在 GUI 打开再派发。
+- `ZCODE_SUB_HOME`：本工具状态目录（任务登记与信箱）；
+- `ZCODE_DATA_BASE_DIR`：ZCode 数据目录基目录（从这里找开关文件）。
+
+建议按 setup 报错输出的 shim 模板做成包装脚本放 PATH。工作区要求：`run --cwd` 的工作区必须已在 ZCode 打开（本地窗口）；未打开或为远端 → 409，先在 GUI 打开。

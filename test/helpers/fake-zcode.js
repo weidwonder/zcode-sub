@@ -4,6 +4,8 @@ import { randomUUID } from "node:crypto";
 // 假 ZCode 本机任务 API：按契约 v2 模拟（/health、/api/tasks 全家、Host+Bearer+
 // Content-Type+413 校验、每任务事件队列与长轮询、resync 溢出、归属表与游标回退），
 // 供测试驱动 src/api.js。
+// messages 幂等：body.clientRequestId 非空合法（1..200 字符）时按任务缓存首次成功应答
+// （同 202、同 delivery、同 commandId），同键重放直接回缓存；空串/超长 400 bad_client_request_id。
 // 校验顺序对齐 A 侧实装：路由级 404/405 → Host 403 → Bearer 401 → 415 → 413 → 400
 // （POST /api/tasks 另有 mode 白名单 400，先于 409 工作区检查——对齐偏离#7）。
 // 控制方法（用例驱动）：createTaskAlreadyRunning / emitEvent / setTaskStatus /
@@ -62,6 +64,7 @@ export async function startFakeZcode({ token = "test-token", port: listenPort = 
     seq: 0,
     events: [],
     pendingSteerCommandId: null, // steer 受理待决：settleSteer 前由 messages 端点登记
+    reqIds: new Map(), // messages 的 clientRequestId → 首次成功应答缓存（幂等去重）
     waiters: new Set(), // 挂起中的长轮询唤醒器
   });
 
@@ -224,10 +227,24 @@ export async function startFakeZcode({ token = "test-token", port: listenPort = 
       const taskId = routeParams[0];
 
       if (pathname.endsWith("/messages")) {
+        // clientRequestId 校验（与 create 同口径）：空串/超 200 字符 → 400（body 参数校验先于归属判定）
+        if (
+          body.clientRequestId === "" ||
+          (typeof body.clientRequestId === "string" && body.clientRequestId.length > 200)
+        ) {
+          json(response, 400, { error: "bad_client_request_id" });
+          return;
+        }
+        const reqId = typeof body.clientRequestId === "string" && body.clientRequestId !== "" ? body.clientRequestId : null;
         if (!ownershipGuard(response, taskId, body.workspacePath)) return;
         const task = tasks.get(taskId);
         if (!task) {
           taskNotFound(response);
+          return;
+        }
+        // 幂等去重：合法同键重放直接回首次成功应答（同 202、同 delivery、同 commandId 原值）
+        if (reqId !== null && task.reqIds.has(reqId)) {
+          json(response, 202, task.reqIds.get(reqId));
           return;
         }
         task.updatedAt = Date.now();
@@ -242,12 +259,17 @@ export async function startFakeZcode({ token = "test-token", port: listenPort = 
             // auto 不带 requestedDelivery，CLI 按会话 follow-up mode 裁决——此处模拟 GUI 默认 queue
             appendEvent(task, "input.queued", { commandId });
           }
-          json(response, 202, { delivery: delivery === "steer" ? "steered" : "queued", commandId });
+          const reply = { delivery: delivery === "steer" ? "steered" : "queued", commandId };
+          if (reqId !== null) task.reqIds.set(reqId, reply);
+          json(response, 202, reply);
           return;
         }
+        // 空闲收到 steer：A 侧按实际去向应答 sent（sendPrompt 不带 guide、无 steer 事件）——空闲不区分 delivery
         task.turnCount += 1;
         appendEvent(task, "turn.started", { turnId: `turn-${task.turnCount}` });
-        json(response, 202, { delivery: "sent" });
+        const reply = { delivery: "sent" };
+        if (reqId !== null) task.reqIds.set(reqId, reply);
+        json(response, 202, reply);
         return;
       }
 

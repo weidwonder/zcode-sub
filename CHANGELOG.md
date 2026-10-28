@@ -25,6 +25,7 @@
 - （评审三轮）run 本地重名预查（exit 7 不触上游，不再产生 GUI 孤儿对话）；删除 setup 尾部不可达的重复可写性探测。
 - （真机反馈轮）run 默认 mode=yolo（GUI『完全访问』，用户拍板——子代理不卡权限确认），`--mode` 与 config `defaultMode` 可覆盖（11 值枚举本地预校验）；list 文本表 taskId 改显示后 8 位（前缀同为 session_ 无区分度）；`--steer` 语义按 A 侧真打断更新（应答 steered/queued 如实显示）；HOME 重定向环境（如 /var/empty）setup 报错直接给 `ZCODE_SUB_HOME`/`ZCODE_DATA_BASE_DIR` 设置示例（README 安装节附 shim 模板）；MCP 配置指明 `~/.zcode/cli/config.json` 共用文件、node 路径自动转 Homebrew 稳定 opt 链接。
 - （A 侧 steer 对齐轮）`--steer` 应答 `steered` 仅为受理，注入结果以事件流为准：wait 打印 `input.steered`（已受理引导）/`steer.injected`（打断生效）/`steer.fellBack`（引导被降级/拒绝——原因与「消息将按排队处理或需重发」提示，不影响 lastStatus 推导）；send 默认 auto 运行中的去向由会话 follow-up mode 决定（GUI 默认排队），文档写明要即时打断用 `--steer`；假端点 steer 受理不再自产事件（新增 settleSteer 控制方法模拟 CLI 投影链路）。
+- （r6 跟进 + Skill 评审轮）send/resume 消息请求带 `clientRequestId` 幂等键（网络失败同键安全重试一次，与 run 同口径）；空闲任务 `--steer` 按实际去向应答 `sent`；`input.steered` 的 commandId 与 202 应答相等（对账键）——wait 按本地分片 `steerCommandIds` 对账打印「你的引导已受理」/「来自 GUI 侧的引导」（GUI 侧对同一任务的引导会产生同型事件）；CLI 未知参数按命令白名单报用法错误（exit 1）、新增 `--version`、`--model` 预留（传入明确报尚未支持）、USAGE 扩充（mode 枚举/事件全量/环境变量表）、setup 的 HOME 重定向提示直接给 shim 与两变量含义；SKILL.md 按 skill-principle 评审重写为精简结构（排障路由/标准循环/判读表/安全/案例），细节下沉 references/setup.md 与新建 references/troubleshooting.md。
 
 ### 修复
 

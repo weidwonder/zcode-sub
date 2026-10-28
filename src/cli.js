@@ -24,12 +24,16 @@ const USAGE = `zcode-sub 用法（把 ZCode 桌面版当子代理）：
       检查 ZCode 本机任务 API、生成/读取开关文件与 token、打印 MCP 配置步骤。
   zcode-sub run "<任务>" --cwd <绝对路径> [--name <名>] [--mode <模式>]
       在 ZCode 该工作区新建对话执行任务（多任务可并行）；stdout 一行 JSON。默认 yolo（完全访问）。
+      --mode 枚举：default/yolo/guarded/plan/edit/acceptEdits/auto/dontAsk/bypassPermissions/autoEdit/build。
+      --model <模型id> 尚未支持（模型选择接口在途，传入会明确报错）。
   zcode-sub send <name> "<消息>" [--steer|--queue]
       补充消息：默认 auto（运行中的去向由会话设置决定，GUI 默认排队；要即时打断用 --steer）；
       --steer 强制引导打断（应答仅为受理，注入结果以事件流为准）、--queue 强制排队；
       任务空闲时即接续对话（sent）。
   zcode-sub wait <name> [--timeout 秒]
-      阻塞等新事件或子代理主动消息（适合后台运行，退出即唤醒）；超时输出 TIMEOUT（退出码 2）。
+      阻塞等新事件或子代理主动消息（适合后台运行，退出即唤醒本轮）；超时输出 TIMEOUT（退出码 2）。
+      事件类型：turn.started/assistant.message/turn.completed/turn.failed/permission.requested/
+      input.queued/input.steered/steer.injected/steer.fellBack；--timeout 默认 600 秒。
   zcode-sub result <name>
       最终回复全文 + 状态；还在跑会明确说。
   zcode-sub resume <name> "<继续文本>"
@@ -38,29 +42,56 @@ const USAGE = `zcode-sub 用法（把 ZCode 桌面版当子代理）：
       停止任务生成。
   zcode-sub list [--json]
   zcode-sub mcp
-      stdio MCP server（reply_to_parent 工具，配进 ZCode 的 mcp.servers）。`;
+      stdio MCP server（reply_to_parent 工具，配进 ZCode 的 mcp.servers）。
+  zcode-sub --version
+      打印版本号。
+
+  环境变量：
+  ZCODE_SUB_HOME          状态目录（任务分片与信箱）；HOME 被重定向的环境必须显式设置
+  ZCODE_DATA_BASE_DIR     ZCode 数据目录基目录（从中找开关文件 <该目录>/.zcode/v2/local-task-api.json）
+  ZCODE_SUB_MAX_RUNNING   同时未结束任务数上限（默认 4，尽力检查）
+  ZCODE_SUB_DEBUG=1       打请求/响应摘要日志（debug.log，不含 token 与任务正文）`;
+
+// 版本唯一出处是 package.json（与 CHANGELOG / Skill metadata.version 同步）。
+// 与 src/mcp.js 各持一份小实现：从这里静态 import 会把 MCP server 代码
+// 拖进每条 CLI 命令的启动路径（mcp 走 cmdMcp 的动态 import 懒加载）。
+function packageVersion() {
+  try {
+    const manifest = JSON.parse(
+      readFileSync(join(dirname(fileURLToPath(import.meta.url)), "..", "package.json"), "utf8"),
+    );
+    return typeof manifest.version === "string" ? manifest.version : "0.0.0";
+  } catch {
+    return "0.0.0";
+  }
+}
 
 export async function runCli(argv) {
   const [command, ...rest] = argv;
+  if (command === "--version") {
+    process.stdout.write(`zcode-sub ${packageVersion()}\n`);
+    return;
+  }
   const home = getHome();
   switch (command) {
     case "setup":
-      return cmdSetup(home, parseFlags(rest));
+      return cmdSetup(home, parseFlagsChecked("setup", rest));
     case "run":
-      return cmdRun(home, parseFlags(rest));
+      return cmdRun(home, parseFlagsChecked("run", rest));
     case "send":
-      return cmdSend(home, parseFlags(rest));
+      return cmdSend(home, parseFlagsChecked("send", rest));
     case "wait":
-      return cmdWait(home, parseFlags(rest));
+      return cmdWait(home, parseFlagsChecked("wait", rest));
     case "result":
-      return cmdResult(home, parseFlags(rest));
+      return cmdResult(home, parseFlagsChecked("result", rest));
     case "resume":
-      return cmdResume(home, parseFlags(rest));
+      return cmdResume(home, parseFlagsChecked("resume", rest));
     case "stop":
-      return cmdStop(home, parseFlags(rest));
+      return cmdStop(home, parseFlagsChecked("stop", rest));
     case "list":
-      return cmdList(home, parseFlags(rest));
+      return cmdList(home, parseFlagsChecked("list", rest));
     case "mcp":
+      checkFlags("mcp", parseFlags(rest)); // mcp 不收任何 flag（白名单为空）：仅校验
       return cmdMcp();
     default:
       process.stdout.write(`${USAGE}\n`);
@@ -68,6 +99,19 @@ export async function runCli(argv) {
       return;
   }
 }
+
+// 各命令允许的 flags（--model 为模型选择接口预留：进入 cmdRun 后专门报「尚未支持」）
+const COMMAND_FLAGS = {
+  setup: new Set(["api-port"]),
+  run: new Set(["cwd", "name", "mode", "model"]),
+  send: new Set(["steer", "queue"]),
+  wait: new Set(["timeout"]),
+  result: new Set(),
+  resume: new Set(),
+  stop: new Set(),
+  list: new Set(["json"]),
+  mcp: new Set(),
+};
 
 function parseFlags(args) {
   const flags = { _: [] };
@@ -86,6 +130,21 @@ function parseFlags(args) {
       flags._.push(arg);
     }
   }
+  return flags;
+}
+
+// 白名单外的 flag 一律用法错误：Skill 预留的参数（如 --model）不能被旧 CLI 静默吞掉
+function checkFlags(command, flags) {
+  const allowed = COMMAND_FLAGS[command];
+  for (const key of Object.keys(flags)) {
+    if (key === "_" || allowed.has(key)) continue;
+    throw usageError(`不认识的参数 --${key}（zcode-sub ${command} 的用法见 zcode-sub --help）`);
+  }
+}
+
+function parseFlagsChecked(command, args) {
+  const flags = parseFlags(args);
+  checkFlags(command, flags);
   return flags;
 }
 
@@ -128,9 +187,14 @@ export function unwritableHomeAdvice(home, fromEnv) {
   }
   return [
     `✗ 状态目录不可写且未设置 ZCODE_SUB_HOME（当前推导值：${home}，常见于 HOME 被重定向的运行环境）。`,
-    `请设置环境变量后重试（建议写进启动脚本，见 README 安装节）：`,
+    `两个变量的含义：`,
+    `  ZCODE_SUB_HOME       本工具状态目录（任务登记与信箱）；`,
+    `  ZCODE_DATA_BASE_DIR  ZCode 数据目录基目录（从这里找 <该目录>/.zcode/v2/local-task-api.json 开关文件）。`,
+    `每条 zcode-sub 命令都要带这两个变量——建议做成 shim（替换 <你的用户名> 与仓库路径后放 PATH）：`,
+    `  #!/bin/bash`,
     `  export ZCODE_SUB_HOME=/Users/<你的用户名>/.zcode-sub`,
     `  export ZCODE_DATA_BASE_DIR=/Users/<你的用户名>`,
+    `  exec /Users/<你的用户名>/projects/zcode-sub/bin/zcode-sub.js "$@"`,
   ].join("\n");
 }
 
@@ -356,6 +420,10 @@ async function cmdRun(home, flags) {
     }
     modeFlag = flags.mode;
   }
+  // --model 为预留接口：模型选择在途，明确报错而非静默吞掉（usage error，建任务之前拦下）。
+  if (flags.model !== undefined) {
+    throw usageError("--model 尚未支持：模型选择接口在途（等上游交付后启用）；当前按 ZCode 会话默认模型派发，去掉 --model 重试");
+  }
   const name = typeof flags.name === "string" && flags.name ? flags.name : autoName();
   assertValidName(name);
   const config = requireConfig(home);
@@ -451,7 +519,14 @@ async function cmdSend(home, flags) {
   const task = requireTask(home, name);
   const config = requireConfig(home);
   const delivery = flags.steer ? "steer" : flags.queue ? "queue" : "auto";
-  const result = await api.sendMessage(config, task.taskId, message, delivery, task.workspacePath);
+  // 幂等键：与 run 同规则（"zsub-"+UUID，总长 41）；网络失败同键安全重试一次，不双投
+  const clientRequestId = "zsub-" + randomUUID();
+  const result = await api.sendMessage(config, task.taskId, message, delivery, task.workspacePath, clientRequestId);
+  // steer 对账键先入本地分片（打印之前）：wait 打印 input.steered 时据此区分
+  // 「你的引导已受理」与「来自 GUI 侧的引导」。空闲任务的 steer 应答 sent、无 commandId，不记。
+  if (result?.delivery === "steered" && result?.commandId) {
+    tasks.appendSteerCommandId(home, name, result.commandId);
+  }
   const commandId = result?.commandId ? `（commandId=${result.commandId}）` : "";
   process.stdout.write(`✓ 投递结果：${result?.delivery ?? "?"}${commandId}\n`);
   if (result?.delivery === "steered") {
@@ -482,7 +557,9 @@ async function cmdResume(home, flags) {
     // error 等其他状态：原样接续，让用户在对话里处理
     process.stdout.write(`任务 status=${status}，按接续处理\n`);
   }
-  await api.sendMessage(config, task.taskId, message, "auto", task.workspacePath);
+  // 幂等键：与 run/send 同规则；网络失败同键安全重试一次，不双投
+  const clientRequestId = "zsub-" + randomUUID();
+  await api.sendMessage(config, task.taskId, message, "auto", task.workspacePath, clientRequestId);
   process.stdout.write("✓ 已接续对话（sent）\n");
 }
 
@@ -536,6 +613,9 @@ async function cmdWait(home, flags) {
     throw usageError("用法：zcode-sub wait <name> [--timeout 秒]");
   }
   const task = requireTask(home, name);
+  // steer 对账集合：本 CLI 每次 --steer 受理时记入分片的 commandId；打印 input.steered
+  // 时对得上的是自己的引导，对不上的是 GUI 侧发起的引导（同任务两路来源）。
+  const ownSteerIds = new Set(Array.isArray(task.steerCommandIds) ? task.steerCommandIds : []);
   const config = requireConfig(home);
   const timeoutSec = Number.parseInt(String(flags.timeout ?? "600"), 10) || 600;
   const deadline = Date.now() + timeoutSec * 1000;
@@ -609,7 +689,7 @@ async function cmdWait(home, flags) {
           skipped += 1;
           continue;
         }
-        written += writeEventLine(event);
+        written += writeEventLine(event, ownSteerIds);
         if (event.type === "permission.requested") {
           const hint = "⏳ 请在 ZCode GUI 处理该权限请求\n";
           process.stdout.write(hint);
@@ -632,16 +712,20 @@ async function cmdWait(home, flags) {
 // 返回本次写入的字符数（含截断提示行），供调用方的批级总量闸（WAIT_OUTPUT_LIMIT）累计。
 const EVENT_TEXT_LIMIT = 2000;
 
-// steer 三事件的可读正文（commandId/error 是机器字段，原文打印为空）；其余事件保持 [type] 原文
+// steer 三事件的可读正文（commandId/error 是机器字段，原文打印为空）；其余事件保持 [type] 原文。
+// input.steered 按本地 steer 受理记录（ownSteerIds）对账：对上是本 CLI 的引导、对不上是 GUI 侧发起。
 const STEER_EVENT_TEXT = {
-  "input.steered": (event) => `已受理引导（commandId=${event.commandId ?? "?"}）；注入结果以事件流为准`,
-  "steer.injected": () => "引导已注入当前轮（打断生效）",
-  "steer.fellBack": (event) => `引导被降级/拒绝，原因：${event.error ?? "?"}——消息将按排队处理或需重发`,
+  "input.steered": (event, ownIds) =>
+    ownIds.has(event.commandId)
+      ? `你的引导已受理（commandId=${event.commandId ?? "?"}）；注入结果以事件流为准`
+      : `来自 GUI 侧的引导（commandId=${event.commandId ?? "?"}）`,
+  "steer.injected": (_event, _ownIds) => "引导已注入当前轮（打断生效）",
+  "steer.fellBack": (event, _ownIds) => `引导被降级/拒绝，原因：${event.error ?? "?"}——消息将按排队处理或需重发`,
 };
 
-function writeEventLine(event) {
+function writeEventLine(event, ownSteerIds = new Set()) {
   const steerText = STEER_EVENT_TEXT[event.type];
-  const raw = steerText ? steerText(event) : (event.text ?? event.error ?? event.summary ?? "");
+  const raw = steerText ? steerText(event, ownSteerIds) : (event.text ?? event.error ?? event.summary ?? "");
   const text = typeof raw === "string" ? raw : String(raw);
   const lines = [`[${event.type}] ${text.length <= EVENT_TEXT_LIMIT ? text : text.slice(0, EVENT_TEXT_LIMIT)}\n`];
   if (text.length > EVENT_TEXT_LIMIT) {
