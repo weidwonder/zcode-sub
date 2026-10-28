@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # 用开源 ZCode 源码构建 mac arm64 桌面安装包（补丁版）。
-# 工具链：Node 24.14.0 解压到 /Users/weidwonder/projects/.toolchains（不动全局）；
+# 工具链：Node 24.14.0 解压到 <家目录>/.cache/zcode-sub/toolchains（ZCODE_TOOLCHAIN_ROOT 可改，不动全局）；
 # 身份：--identity preview（默认，ZCode Preview.app 与正式版并存）| production（ZCode.app 原地替换用）。
 # 产物：--no-dmg 跳过 DMG 只出 zip（受限沙箱内 hdiutil 必败时用）。
 # 环境变量依据（源码 3.16.2）：
@@ -15,7 +15,7 @@ DRY_RUN=0
 SKIP_INSTALL=0
 NO_DMG=0
 NODE_VERSION="24.14.0"
-TOOLCHAIN_ROOT="/Users/weidwonder/projects/.toolchains"
+TOOLCHAIN_ROOT="${ZCODE_TOOLCHAIN_ROOT:-${ZCODE_REAL_HOME:-$HOME}/.cache/zcode-sub/toolchains}"
 NODE_MIRRORS=(
   "https://registry.npmmirror.com/-/binary/node"
   "https://nodejs.org/dist"

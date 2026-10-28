@@ -24,7 +24,7 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-REAL_HOME="/Users/weidwonder"   # 座位 HOME 被重定向，用户真实家目录固定为此
+REAL_HOME="${ZCODE_REAL_HOME:-$HOME}"   # HOME 被重定向的环境（沙箱/多账号容器）用 ZCODE_REAL_HOME 指向真实家目录
 ZCODE_ROOT="${ZCODE_ROOT:-$REAL_HOME/.zcode}"
 BACKUP_ROOT="${ZCODE_BACKUP_ROOT:-$REAL_HOME/projects/zcode-backups}"
 STAMP="$(date +%Y%m%d-%H%M%S)"
@@ -39,8 +39,7 @@ ensure_writable() { # $1=将写入的目录 $2=用途
 }
 
 if [[ ! -d "$ZCODE_ROOT" ]]; then
-  log "错误：ZCode 数据目录不存在或不可读：$ZCODE_ROOT"
-  exit 1
+  die "找不到 ZCode 数据目录 ${ZCODE_ROOT}；HOME 被重定向的环境请设 ZCODE_REAL_HOME=<真实家目录>（或直接设 ZCODE_ROOT）"
 fi
 if ! command -v sqlite3 >/dev/null 2>&1; then
   log "错误：需要 sqlite3（macOS 自带）；当前 PATH 找不到"

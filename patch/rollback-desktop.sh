@@ -5,7 +5,7 @@
 set -euo pipefail
 
 DRY_RUN=0; ASSUME_YES=0; LIST=0; FROM=""
-REAL_HOME="/Users/weidwonder"
+REAL_HOME="${ZCODE_REAL_HOME:-$HOME}"   # HOME 被重定向的环境（沙箱/多账号容器）用 ZCODE_REAL_HOME 指向真实家目录
 BACKUP_ROOT="${ZCODE_BACKUP_ROOT:-$REAL_HOME/projects/zcode-backups}"
 APPS_DIR="$BACKUP_ROOT/apps"
 

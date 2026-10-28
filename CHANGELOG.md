@@ -15,6 +15,7 @@
 
 ### 不兼容
 
+- patch/ 脚本默认路径去个人化：五个脚本的 `REAL_HOME` 由写死 `/Users/weidwonder` 改为 `${ZCODE_REAL_HOME:-$HOME}`，`build-desktop.sh` / `sync-upstream.sh` 的 `TOOLCHAIN_ROOT` 由写死 `/Users/weidwonder/projects/.toolchains` 改为 `${ZCODE_TOOLCHAIN_ROOT:-<家目录>/.cache/zcode-sub/toolchains}`。HOME 被重定向的环境（沙箱/多账号容器）需设 `ZCODE_REAL_HOME=<真实家目录>`（或按脚本直接设 `ZCODE_ROOT` / `ZCODE_TOOLCHAIN_ROOT` / `ZCODE_BACKUP_ROOT`）；`backup-zcode-data.sh` 找不到数据目录时报错并给出该设置提示（--dry-run 同样拦截）。`patch/README.md` 新增「环境变量」一节，示例路径全部占位符化。
 - 传输层整体切换：`zcode-sub` 从 ZCode Webhook Bot 入站（契约 v1）改为 ZCode 本机任务 API（契约 v2）。旧调用方式：配置 botId/secret、GUI 建 Webhook bot、bind code 绑定、`setup --bot-id/--bind-code/--secret/--daemon-port/--ingress-port`；新调用方式：`zcode-sub setup`（写 `~/.zcode/v2/local-task-api.json`，token 自动生成），`run` 直接建 ZCode 普通对话（多任务并行），`send` 运行中可补充消息（auto/steer/queue）。迁移：删除旧 `~/.zcode-sub` 重跑 setup。原因：用户要求多对话并行与运行中补消息，v1 单 bot 单会话且无 steer（spec §14 决策 D-v2-01）。
 - 桥接 daemon（`zcode-sub daemon` 子命令、出站回调接收、`/internal/reply` HTTP 面）删除——v2 为拉模式（events 长轮询），`reply_to_parent` 改为 MCP 进程直写信箱文件。
 - 退出码 6（未绑定）删除；退出码表变为 2/3/4/5/7/8（3 的语义改为 workspace_not_open，8 为并发上限；完整闭集见 spec §3）。
