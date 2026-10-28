@@ -8,13 +8,13 @@
 | 接口名 | 调用点（文件:行） | 注意事项 |
 |---|---|---|
 | `GET /health` | src/api.js:106 | 校验 `api=="zcode-local-task-api"` 且 `version==2`，否则视为不是本 API |
-| `POST /api/tasks` | src/api.js:123（cmdRun src/cli.js:307） | body `{workspacePath, prompt, title, clientRequestId}`（clientRequestId 幂等键，同键去重返回同一 taskId；网络失败同键重试一次）；title 传本地任务名；409 `{error:"workspace_not_open"}` → exit 3 |
-| `POST /api/tasks/:id/messages` | src/api.js:160（cmdSend src/cli.js:385、cmdResume src/cli.js:399） | delivery auto/queue/steer；auto=GUI 运行中默认（queue/guide 由命令层裁决，ConversationComposer.tsx:224-225） |
-| `POST /api/tasks/:id/stop` | src/api.js:176（cmdStop src/cli.js:425） | 202 即受理 |
-| `GET /api/tasks/:id` | src/api.js:192（cmdResult src/cli.js:438、cmdResume 前置检查、cmdRun 并发计数刷新） | status 五值；lastAssistantText 为最后完整助手回复 |
-| `GET /api/tasks/:id/events?after=&waitMs=` | src/api.js:205（cmdWait src/cli.js:469） | 长轮询 ≤30s；`{resync:true}` 溢出改查 GET；事件字段终值 `text`/`error`/`summary`/`turnId`/`commandId`（与 A 实装对齐，清单在 spec §3）；ZCode 重启后 seq 可能回退，客户端重置游标 |
-| `local-task-api.json` 开关文件 | cmdSetup src/cli.js:122（读/写 `{enabled,port,token}`，0600） | ZCode 只读该文件；桥接 setup 是写入方之一（契约第 1 条） |
-| `mcp.servers` stdio 配置（command/args/env） | mcpConfigSnippet src/cli.js:220 | 需 `features.mcp` 开启；env 只传 `ZCODE_SUB_HOME` |
+| `POST /api/tasks` | src/api.js:123（cmdRun src/cli.js:341；mode 默认 yolo，D-v2-17） | body `{workspacePath, prompt, title, clientRequestId, mode}`（mode 默认 yolo；clientRequestId 幂等键，同键去重返回同一 taskId；网络失败同键重试一次）；title 传本地任务名；409 `{error:"workspace_not_open"}` → exit 3 |
+| `POST /api/tasks/:id/messages` | src/api.js:160（cmdSend src/cli.js:444、cmdResume src/cli.js:458） | delivery auto/queue/steer；auto=GUI 运行中默认（queue/guide 由命令层裁决，ConversationComposer.tsx:224-225） |
+| `POST /api/tasks/:id/stop` | src/api.js:176（cmdStop src/cli.js:484） | 202 即受理 |
+| `GET /api/tasks/:id` | src/api.js:192（cmdResult src/cli.js:497、cmdResume 前置检查、cmdRun 并发计数刷新） | status 五值；lastAssistantText 为最后完整助手回复 |
+| `GET /api/tasks/:id/events?after=&waitMs=` | src/api.js:205（cmdWait src/cli.js:528） | 长轮询 ≤30s；`{resync:true}` 溢出改查 GET；事件字段终值 `text`/`error`/`summary`/`turnId`/`commandId`（与 A 实装对齐，清单在 spec §3）；ZCode 重启后 seq 可能回退，客户端重置游标 |
+| `local-task-api.json` 开关文件 | cmdSetup src/cli.js:136（读/写 `{enabled,port,token}`，0600） | ZCode 只读该文件；桥接 setup 是写入方之一（契约第 1 条） |
+| `mcp.servers` stdio 配置（command/args/env） | mcpConfigSnippet src/cli.js:239（stableNodePath Cellar→opt） | 需 `features.mcp` 开启；env 只传 `ZCODE_SUB_HOME` |
 | MCP `reply_to_parent(task, message)`（本仓提供，ZCode 拉起） | src/mcp.js（appendReplyLine src/mailbox.js:14、登记校验 getTask src/tasks.js:135） | ZCode 以真实用户身份拉起 stdio server，直写状态目录信箱 |
 
 ## 业务域地图

@@ -30,6 +30,7 @@ zcode-sub result audit-api
 
 机制与边界（使用前必须知道）：
 
+- **默认完全访问（mode=yolo，用户拍板）**：派发的子代理不会卡权限确认；`--mode` 可收紧（11 值枚举）。wait 仍保留 `permission.requested` 的「去 ZCode GUI 处理」提示——非 yolo 模式或上游仍发请求时用到；权限不经本工具批准。
 - **多任务并行**：name 是本地任务键（映射 ZCode 对话 taskId）；各任务事件互不干扰。任务在 ZCode GUI 实时可见，用户可能直接在 GUI 看或干预。并发上限见上文 run 条。
 - **send 的返回**：打印 sent/queued/steered（queued/steered 带 commandId）——运行中补充默认排队或引导，不是立即生效。
 - **wait 的事件粒度**：`[turn.completed] <最终文本>` 出现即该轮完成；停止后的完成事件文本可能为空（以 result 的状态为准）；`permission.requested` 只提示去 GUI；收到「事件缓冲溢出」（上游事件缓冲有界，溢出）改用 result 轮询。

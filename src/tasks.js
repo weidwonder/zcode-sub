@@ -53,6 +53,27 @@ function readShard(file) {
   }
 }
 
+// 同步睡：Atomics.wait 在 Node 主线程可用，阻塞等待但不占 CPU。用它而非
+// setTimeout，registerTask 就能保持同步签名（cli.js/mcp.js 的调用方都不必加 await）。
+function syncSleep(ms) {
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+}
+
+// EEXIST 分支专用重读：首读解析失败不一定是损坏——同名竞态里胜者刚以 wx
+// 建完文件、内容还在写入时，败者读到的是半截（半截 ≠ 损坏，D-v2-16 的
+// TOCTOU 窗口）。退避 50ms 重读一次、仍失败再 100ms 读第三次；任一次解析
+// 成功即按正常占用处理；三次全失败才判真损坏。完好分片首读即成功、真损坏
+// 分片只多付一次 ~150ms 的登记耗时，都只发生在 EEXIST 分支。
+function readShardWithRetry(file) {
+  let shard = readShard(file);
+  for (const backoffMs of [50, 100]) {
+    if (!shard.corrupt) return shard;
+    syncSleep(backoffMs);
+    shard = readShard(file);
+  }
+  return shard;
+}
+
 // 损坏分片挪到 <name>.json.corrupt-<时间戳>；挪不动（如权限）就留在原地，静默跳过。
 function backupCorruptShard(file) {
   try {
@@ -101,7 +122,8 @@ export function registerTask(home, name, { taskId, workspacePath, clientRequestI
     if (err.code !== "EEXIST") throw err;
     // 同名分片是损坏文件（解析失败/非纯对象）时，登记会陷入"换名也没用"的死局：
     // 先备份坏分片，再覆盖重登记（评审 N3 方案①）。分片完好则照旧拒绝。
-    const shard = readShard(file);
+    // 解析失败先退避重读区分「胜者写入中的半截」与「真损坏」，见 readShardWithRetry。
+    const shard = readShardWithRetry(file);
     if (!shard.corrupt) throw nameTakenError(name);
     backupCorruptShard(file);
     try {

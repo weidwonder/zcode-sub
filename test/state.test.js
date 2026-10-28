@@ -318,6 +318,37 @@ test("子进程同名竞态：恰好一个成功一个 zcode_name_taken，落盘
   }
 });
 
+test("同名合法分片（内容为别的任务）：registerTask 零退避立即 zcode_name_taken", () => {
+  const home = tempHome();
+  try {
+    const dir = join(home, "tasks");
+    mkdirSync(dir, { recursive: true });
+    // 完好分片但内容是别的任务：首读即解析成功，必须零退避立即拒绝
+    writeFileSync(
+      shardPath(home, "t1"),
+      `${JSON.stringify(
+        { taskId: "task-other", workspacePath: "/other", createdAt: 1, lastStatus: "running", eventsSeq: 9 },
+        null,
+        2,
+      )}\n`,
+      "utf8",
+    );
+    const start = Date.now();
+    assert.throws(
+      () => registerTask(home, "t1", { taskId: "task-mine", workspacePath: "/tmp/ws" }),
+      (err) => err.code === "zcode_name_taken" && err.exitCode === 7,
+    );
+    // 零退避路径：任何退避路径至少 +50ms、全预算 ~150ms；上限放宽到 100ms
+    // 只为排除机器病态卡顿，仍足以证明没走退避
+    assert.ok(Date.now() - start < 100, `合法分片应零退避立即拒绝，实耗 ${Date.now() - start}ms`);
+    // 原分片分毫不动，也不产生 .corrupt-* 备份
+    assert.equal(getTask(home, "t1").taskId, "task-other");
+    assert.deepEqual(readdirSync(dir).filter((f) => f.startsWith("t1.json.corrupt-")), []);
+  } finally {
+    rmSync(home, { recursive: true, force: true });
+  }
+});
+
 test("坏分片：updateTask 备份后按不存在；只读路径不备份；registerTask 可重新登记", () => {
   const home = tempHome();
   try {

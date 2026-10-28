@@ -1,5 +1,5 @@
 import { randomBytes, randomUUID } from "node:crypto";
-import { mkdirSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
 import { userInfo } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -22,8 +22,8 @@ const USAGE = `zcode-sub 用法（把 ZCode 桌面版当子代理）：
 
   zcode-sub setup [--api-port <端口>]
       检查 ZCode 本机任务 API、生成/读取开关文件与 token、打印 MCP 配置步骤。
-  zcode-sub run "<任务>" --cwd <绝对路径> [--name <名>]
-      在 ZCode 该工作区新建对话执行任务（多任务可并行）；stdout 一行 JSON。
+  zcode-sub run "<任务>" --cwd <绝对路径> [--name <名>] [--mode <模式>]
+      在 ZCode 该工作区新建对话执行任务（多任务可并行）；stdout 一行 JSON。默认 yolo（完全访问）。
   zcode-sub send <name> "<消息>" [--steer|--queue]
       补充消息：默认 auto（运行中=GUI 排队/引导语义）；--steer 强制引导、--queue 强制排队；
       任务空闲时即接续对话（sent）。
@@ -119,12 +119,25 @@ function requireTask(home, name) {
 
 // ---------- setup ----------
 
+// 状态目录不可写时的指引（座位环境 os.userInfo().homedir=/var/empty，默认推导会失效）：
+// ZCODE_SUB_HOME 已设置（fromEnv）→ 只需对该目录授权；未设置 → 先显式给环境变量再重试。
+export function unwritableHomeAdvice(home, fromEnv) {
+  if (fromEnv) {
+    return `✗ 状态目录不可写：${home}\n请执行：dwc grant ${home}`;
+  }
+  return [
+    `✗ 状态目录不可写且未设置 ZCODE_SUB_HOME（当前推导值：${home}，常见于 HOME 被重定向的运行环境）。`,
+    `请设置环境变量后重试（建议写进启动脚本，见 README 安装节）：`,
+    `  export ZCODE_SUB_HOME=/Users/<你的用户名>/.zcode-sub`,
+    `  export ZCODE_DATA_BASE_DIR=/Users/<你的用户名>`,
+  ].join("\n");
+}
+
 async function cmdSetup(home, flags) {
   // 任何 loadConfig/updateConfig 之前先探状态目录可写：不可写时后续 ensureHome 的
-  // mkdirSync 会裸崩，这里直接给 dwc grant 指引退出。
+  // mkdirSync 会裸崩，这里直接给指引退出（fromEnv = ZCODE_SUB_HOME 已设置）。
   if (!ensureWritableHome(home)) {
-    process.stdout.write(`✗ 状态目录不可写：${home}\n`);
-    process.stdout.write(`请执行：dwc grant ${home}\n`);
+    process.stdout.write(`${unwritableHomeAdvice(home, Boolean(process.env.ZCODE_SUB_HOME?.trim()))}\n`);
     process.exitCode = 1;
     return;
   }
@@ -165,6 +178,9 @@ async function cmdSetup(home, flags) {
       );
       process.stdout.write(`  完整 token 已存入 ${join(home, "config.json")}，可打开查看。\n`);
       process.stdout.write(`  若需本工具自动写入：dwc grant ${dirname(switchFile)} 后重跑 setup。\n`);
+      process.stdout.write(
+        `  若数据目录推导失效（如 /var/empty），设置 ZCODE_DATA_BASE_DIR=<真实家目录> 后重跑 setup。\n`,
+      );
     }
   }
 
@@ -185,11 +201,14 @@ async function cmdSetup(home, flags) {
   }
 
   process.stdout.write(
-    "把下面片段合入 ZCode 的 MCP 配置（settings 里的 mcp.servers），ZCode 里即可用 reply_to_parent 工具：\n",
+    "把下面片段合入 ZCode 的 MCP 配置文件（桌面版与 CLI 共用 ~/.zcode/cli/config.json 的 mcp.servers，\nZCode 会实时加载；子代理首次调用工具时会弹权限确认）：\n",
   );
   process.stdout.write("```json\n");
   process.stdout.write(`${JSON.stringify(mcpConfigSnippet(home), null, 2)}\n`);
   process.stdout.write("```\n");
+  if (stableNodePath() !== process.execPath) {
+    process.stdout.write("ℹ node 路径已从 Homebrew Cellar 转为稳定的 opt 链接（升级 Node 不断链）。\n");
+  }
 }
 
 function readSwitchFile(file) {
@@ -224,7 +243,7 @@ function mcpConfigSnippet(home) {
       servers: {
         "zcode-sub": {
           type: "stdio",
-          command: process.execPath,
+          command: stableNodePath(),
           args: [join(packageBinDir(), "zcode-sub.js"), "mcp"],
           env: { ZCODE_SUB_HOME: resolve(home) },
           enabled: true,
@@ -232,6 +251,17 @@ function mcpConfigSnippet(home) {
       },
     },
   };
+}
+
+// Homebrew 的 Cellar 路径带版本号（升级即断链）；opt 路径是稳定符号链接。
+function stableNodePath() {
+  const execPath = process.execPath;
+  const match = execPath.match(/\/Cellar\/(node(@[^/]+)?)\//u);
+  if (match) {
+    const candidate = `/opt/homebrew/opt/${match[1]}/bin/node`;
+    return existsSync(candidate) ? candidate : execPath;
+  }
+  return execPath;
 }
 
 function packageBinDir() {
@@ -266,6 +296,10 @@ function isWritableHome(home) {
 }
 
 // ---------- run ----------
+
+// 偏离#11：mode 枚举与假端点/ZCode 侧白名单一致。run 默认 yolo（用户拍板：派发任务
+// 默认完全访问）；--mode 可覆盖，config.defaultMode 次之（合法才用）。
+const TASK_MODES = new Set(["default","yolo","guarded","plan","edit","acceptEdits","auto","dontAsk","bypassPermissions","autoEdit","build"]);
 
 // 终态只有 idle/error；dispatched/running/waiting_permission/waiting_input/未知值都算未结束。
 const TERMINAL_STATUSES = new Set(["idle", "error"]);
@@ -308,11 +342,35 @@ async function cmdRun(home, flags) {
   const taskText = flags._[0];
   const cwd = flags.cwd;
   if (!taskText || typeof cwd !== "string" || !cwd.startsWith("/")) {
-    throw usageError('用法：zcode-sub run "<任务>" --cwd <工作区绝对路径> [--name <名>]');
+    throw usageError('用法：zcode-sub run "<任务>" --cwd <工作区绝对路径> [--name <名>] [--mode <模式>]');
+  }
+  // --mode 显式传入先校验合法性：用法错误不该依赖 setup 状态，在建任务之前拦下。
+  // flags.mode 为布尔 true（--mode 后没跟值）时视同未传，走 config/默认。
+  let modeFlag = null;
+  if (typeof flags.mode === "string") {
+    if (!TASK_MODES.has(flags.mode)) {
+      throw usageError(
+        `用法错误：--mode "${flags.mode}" 不在合法枚举内（default/yolo/guarded/plan/edit/acceptEdits/auto/dontAsk/bypassPermissions/autoEdit/build）`,
+      );
+    }
+    modeFlag = flags.mode;
   }
   const name = typeof flags.name === "string" && flags.name ? flags.name : autoName();
   assertValidName(name);
   const config = requireConfig(home);
+  // mode 解析：--mode 显式优先（已校验）；其次 config.defaultMode（合法才用）；否则
+  // 默认 yolo（完全访问）。config.defaultMode 非法时忽略并提示，不阻断派发。
+  let mode;
+  if (modeFlag !== null) {
+    mode = modeFlag;
+  } else if (config.defaultMode && TASK_MODES.has(config.defaultMode)) {
+    mode = config.defaultMode;
+  } else {
+    if (config.defaultMode) {
+      process.stderr.write(`⚠ config.defaultMode="${config.defaultMode}" 非法，已忽略（按默认 yolo）\n`);
+    }
+    mode = "yolo";
+  }
   // 忠实#2：本地重名预查——重名在触上游之前拦下，不先 createTask 才被 registerTask
   // 拒绝（那会在 ZCode 侧留下孤儿对话）。消息口径与 registerTask 的 nameTakenError 一致；
   // 预查到登记之间的并发竞态仍由 registerTask 的 EEXIST 兜底。
@@ -331,6 +389,7 @@ async function cmdRun(home, flags) {
     workspacePath: cwd,
     prompt: wrappedPrompt(name, cwd, taskText),
     title: name,
+    mode,
     clientRequestId,
   });
   try {
@@ -596,13 +655,13 @@ function cmdList(home, flags) {
     process.stdout.write("（还没有任务；用 zcode-sub run 派发）\n");
     return;
   }
-  const rows = [["name", "taskId(前8位)", "lastStatus", "createdAt", "workspacePath"].join("\t")];
+  const rows = [["name", "taskId(后8位)", "lastStatus", "createdAt", "workspacePath"].join("\t")];
   for (const name of names) {
     const task = tasks.getTask(home, name);
     rows.push(
       [
         name,
-        String(task.taskId ?? "").slice(0, 8),
+        String(task.taskId ?? "").slice(-8),
         task.lastStatus ?? "?",
         task.createdAt ? new Date(task.createdAt).toISOString() : "",
         task.workspacePath ?? "",

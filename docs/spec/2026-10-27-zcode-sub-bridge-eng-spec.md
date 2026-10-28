@@ -68,7 +68,7 @@ authority_refs:
 |---|---|
 | FR-001 | `zcode-sub setup`：健康检查 `GET /health`（校验 `api=="zcode-local-task-api"`、`version==2`）；开关文件 `<dataBaseDir>/.zcode/v2/local-task-api.json` 不存在或无 token 时生成 token（≥32 字节随机）以 0600 写入 `{"enabled":true,"port":47821,"token":...}` 并提示需重启 ZCode；已存在且 enabled 时读回 token/port 存桥接 config；打印 MCP 配置步骤与授权提示（状态目录/ZCode 配置目录不可写时提示 `dwc grant <目录>`，2026-10-27 起两者均已授权，提示按实测可写性输出） |
 | FR-002 | 状态层：`config.json` v2 `{apiPort, token}`；任务登记为每任务一分片 `tasks/<name>.json`（`{taskId,workspacePath,createdAt,lastStatus,eventsSeq,clientRequestId?}`，`wx` 独占创建，读侧聚合）；name 沿用 `[A-Za-z0-9._-]+` 校验且与既有任务重名时拒绝 |
-| FR-003 | `zcode-sub run "<任务>" --cwd <绝对路径> [--name <名>]`：本地重名预查（已登记名 exit 7、不触上游；EEXIST 兜并发竞态）→ `POST /api/tasks {workspacePath, prompt, title:name, clientRequestId}`；prompt MUST 含子代理身份说明（task 名、reply_to_parent 用法、最终总结要求）；stdout 一行 JSON（name/taskId/status/workspacePath/clientRequestId/warning?）；409 → `zcode_workspace_not_open` exit 3 |
+| FR-003 | `zcode-sub run "<任务>" --cwd <绝对路径> [--name <名>] [--mode <模式>]`：mode 取值 `--mode` > `config.defaultMode` > **默认 `yolo`（完全访问，用户拍板 D-v2-17）**，非法枚举本地拒绝 exit 1；本地重名预查（已登记名 exit 7、不触上游；EEXIST 兜并发竞态）→ `POST /api/tasks {workspacePath, prompt, title:name, clientRequestId, mode}`；prompt MUST 含子代理身份说明（task 名、reply_to_parent 用法、最终总结要求）；stdout 一行 JSON（name/taskId/status/workspacePath/clientRequestId/warning?）；409 → `zcode_workspace_not_open` exit 3 |
 | FR-004 | `zcode-sub send <name> "<消息>" [--steer\|--queue]`：`POST /api/tasks/:id/messages {text, delivery:"auto"\|"steer"\|"queue"}`（默认 auto=GUI 运行中默认行为）；打印 `{delivery: sent\|queued\|steered, commandId?}` |
 | FR-005 | `zcode-sub wait <name> [--timeout 秒]`：循环 = 查信箱新行 → 无则 `GET /events?after=<eventsSeq>&waitMs=` 长轮询（waitMs=min(30000, 剩余超时)；resync 时 GET 任务并打印溢出提示）；新事件（turn.started/assistant.message/turn.completed/turn.failed/permission.requested/input.queued/input.steered）或信箱新 reply 行 → 打印（permission.requested 附「请在 ZCode GUI 处理」）→ 推进游标 → exit 0；超时 TIMEOUT exit 2 |
 | FR-006 | `zcode-sub result <name>`：`GET /api/tasks/:id`；status ∈ running/waiting_permission/waiting_input → 明确说在跑（waiting_* 附 GUI 提示）；idle/error → 打印 status 与 lastAssistantText 全文 |
@@ -134,7 +134,7 @@ v1 的 seq/dispatch/status/notice 行语义删除；daemon.json、daemon.log、c
 - **本集成不做哪些写操作**：不批权限、不写 ZCode 数据文件（开关文件按契约第 1 条「由用户或桥接程序 setup 写入」，仅 setup 显式执行）。
 - **B 依赖的字段级契约（与 A 实装对齐后的终值）**：
   - `events[i]`：`seq`（每任务从 1 单调，缓冲 500，溢出 `{resync:true}`）、`at`（毫秒）、`type` ∈ turn.started / assistant.message / turn.completed / turn.failed / permission.requested / input.queued / input.steered；payload 字段 `turn.started{turnId}`、`assistant.message{text}`、`turn.completed{text}`（停止后 text 可为空）、`turn.failed{error}`、`permission.requested{summary}`、`input.queued|steered{commandId}`。
-  - `POST /api/tasks` 的 `title` 传 name；可选 `clientRequestId` 为去重幂等键（**1..200 字符、10 分钟窗口**，命中返回同一 taskId、状态码 200）——run 生成 `zsub-<uuid>`（41 字符）并记入本地分片，重试间隔毫秒级远在窗口内；可选 `mode` 为 11 值枚举（default/yolo/guarded/plan/edit/acceptEdits/auto/dontAsk/bypassPermissions/autoEdit/build），非法 400——CLI 当前不传 mode（取 GUI 默认），`zcode-sub run` 无 `--mode`；`turnCount` 为快照中 assistant 消息条数。
+  - `POST /api/tasks` 的 `title` 传 name；可选 `clientRequestId` 为去重幂等键（**1..200 字符、10 分钟窗口**，命中返回同一 taskId、状态码 200）——run 生成 `zsub-<uuid>`（41 字符）并记入本地分片，重试间隔毫秒级远在窗口内；`mode` 为 11 值枚举（default/yolo/guarded/plan/edit/acceptEdits/auto/dontAsk/bypassPermissions/autoEdit/build），非法 400——B 默认传 `yolo`、`--mode`/`config.defaultMode` 可覆盖（D-v2-17，本地预校验非法值）；`turnCount` 为快照中 assistant 消息条数。
   - **create 部分失败**（偏离 #13）：首条 prompt 发送失败仍回 `201 {taskId, warning:"first_prompt_failed"}`——B 照常登记，stdout JSON 带 `warning` 字段、stderr 提示用 send 补发、退出码 0（任务已建，非零会误判整轮失败）。
   - **op 异常**（偏离 #14）：Host 退出时在飞请求结清为 `503 {error:"unavailable_host"}`——B 视为暂态：GET/带幂等键的 createTask 重试一次，其余 POST 不重试，最终失败报 `zcode_api_unreachable`（exit 2，文案带 unavailable_host）。
   - `GET /api/tasks/:id` 的 `lastAssistantText` 为最近一条完整助手回复（idle 时即最终回复）。
@@ -241,6 +241,7 @@ tools/call reply_to_parent → task 在本地分片登记中？（不在 → isE
   | ZCODE_SUB_DEBUG | env | 否 | 关（=1 写 debug.log 摘要） | 即时 |
   | config.apiPort | int | 否 | 47821；开关文件已存在时以它为准（`--api-port` 冲突即报错 exit 1，不覆盖用户侧文件——FR-021） | setup 时 |
   | config.token | string | setup 生成 | — | — |
+  | config.defaultMode | string | 否 | yolo（run 的 --mode > 此值 > yolo） | — |
 - **安全不变量**：
   ```
   Invariant 1: CLI/MCP 只请求 127.0.0.1，不发起任何非本机连接
@@ -336,6 +337,8 @@ stateDiagram-v2
 | D-v2-14（评审二轮） | wait 批级输出上限 20k 字符 | 超出降级一行摘要（总量+获取方式），游标照常推进 | 防积压事件/reply 一次性灌爆父上下文（实测无闸可达 24 万字符） |
 | D-v2-15（评审二轮） | 刷新 404 置 error | GUI 删除的任务在下次 run 刷新时释放并发额度 | 否则幽灵任务永久占坑、无 CLI 清理手段 |
 | D-v2-16（评审二轮） | 损坏分片在重登记时备份并覆盖 | registerTask 遇 EEXIST 且分片不可解析 → 备份 .corrupt 后覆盖 | 修复「备份路径不可达、名字永久卡死」的死局 |
+| D-v2-17（真机反馈，用户拍板） | run 默认 mode="yolo"（GUI『完全访问』） | 派发的子代理不再卡权限确认；--mode 与 config.defaultMode 可覆盖 | 权限请求事件（permission.requested）处理逻辑保留——非 yolo 模式或上游仍发请求时照常提示去 GUI |
+| D-v2-18（真机反馈） | steer 为真打断语义 | send --steer 请求打断当前生成，ZCode 无法打断时降级排队（应答 delivery=steered/queued 如实显示，透传实现） | A 侧正把 steer 改为与 GUI 一致的真打断 |
 | D-v2-11（评审一轮） | 任务登记分片文件 + wx 独占创建 | 单文件读改写并发实测丢 25% | 分片天然消竞争，与信箱同构 |
 | D-v2-12（评审一轮） | setup 端口冲突报错不覆盖 | 开关文件是 ZCode 侧事实源 | 自动重写会让 GUI 配置静默漂移 |
 | D-v2-13（契约对齐） | 所有 :taskId 请求带 workspacePath；seq 回退重置游标 | A 实装：ZCode 重启丢归属表、事件缓冲清空 | 路由兜底由调用方提供归属 |

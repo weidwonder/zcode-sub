@@ -23,13 +23,13 @@ zcode-sub setup
 它会：
 1. 检查/写入 ZCode 侧开关文件 `~/.zcode/v2/local-task-api.json`（不存在时生成 token、以 0600 权限写入 `{"enabled":true,"port":47821,"token":…}`）——**写完必须重启 ZCode 生效**；已存在则读回 token/端口；
 2. 健康检查本机任务 API（应见「✓ 本机任务 API 正常」）；
-3. 打印把 MCP server 配进 ZCode 的 JSON 片段。
+3. 打印把 MCP server 配进 ZCode 的 JSON 片段（写入位置见第 3 节：`~/.zcode/cli/config.json`）。
 
 目录不可写时按 setup 输出的 `dwc grant <目录>` 提示授权后重跑。
 
 ## 3. 把 reply_to_parent 配进 ZCode（否则子代理无法主动汇报，症状是永远收不到 [reply] 行）
 
-将 setup 打印的片段合入 ZCode 的 MCP 配置（用户配置 `mcp.servers`，需 `features.mcp` 开启），形如：
+将 setup 打印的片段合入 ZCode 的 MCP 配置文件 **`~/.zcode/cli/config.json` 的 `mcp.servers`**（桌面版与 CLI 共用该文件，ZCode 实时加载，无需重启；子代理首次调用工具会弹权限确认；需 `features.mcp` 开启），形如：
 
 ```json
 {

@@ -13,6 +13,9 @@ export function loadConfig(home) {
     return {
       apiPort: Number.isInteger(parsed.apiPort) ? parsed.apiPort : 47821,
       token: typeof parsed.token === "string" ? parsed.token : "",
+      // defaultMode：可选字符串（run 的默认派发模式），没有就不带该键（保持旧返回
+      // 形状，state.test 的 deepEqual 依赖）；合法性不在这里判——用的时候按枚举校验。
+      ...(typeof parsed.defaultMode === "string" ? { defaultMode: parsed.defaultMode } : {}),
     };
   } catch {
     return null;

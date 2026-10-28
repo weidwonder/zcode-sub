@@ -23,6 +23,7 @@
 - 对齐上游偏离 #11~#14：create 部分失败（`201 {taskId, warning:"first_prompt_failed"}`）照常登记并以 JSON `warning` 字段 + stderr 补发提示告知（退出码 0，任务已建）；op 异常 `503 {error:"unavailable_host"}` 视为暂态（GET/带幂等键 createTask 重试一次，最终失败报 `zcode_api_unreachable`）；假端点补 mode 11 值枚举（非法 400）与 clientRequestId 1..200/10 分钟窗口口径；run 不暴露 `--mode`（缺省取 GUI 默认）。
 - `POST /api/tasks` 携带 `clientRequestId` 幂等键（run 生成 `zsub-<uuid>` 并记入本地分片与 stdout JSON；上游同键去重返回同一 taskId）：createTask 网络失败改为**同键安全重试一次**，撤回下条「POST 一律不重试」中对建任务的保守禁令；messages/stop 仍不重试。
 - （评审三轮）run 本地重名预查（exit 7 不触上游，不再产生 GUI 孤儿对话）；删除 setup 尾部不可达的重复可写性探测。
+- （真机反馈轮）run 默认 mode=yolo（GUI『完全访问』，用户拍板——子代理不卡权限确认），`--mode` 与 config `defaultMode` 可覆盖（11 值枚举本地预校验）；list 文本表 taskId 改显示后 8 位（前缀同为 session_ 无区分度）；`--steer` 语义按 A 侧真打断更新（应答 steered/queued 如实显示）；HOME 重定向环境（如 /var/empty）setup 报错直接给 `ZCODE_SUB_HOME`/`ZCODE_DATA_BASE_DIR` 设置示例（README 安装节附 shim 模板）；MCP 配置指明 `~/.zcode/cli/config.json` 共用文件、node 路径自动转 Homebrew 稳定 opt 链接。
 
 ### 修复
 

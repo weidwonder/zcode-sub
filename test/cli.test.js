@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, before, test } from "node:test";
 import { startFakeZcode } from "./helpers/fake-zcode.js";
+import { unwritableHomeAdvice } from "../src/cli.js";
 import { loadConfig, saveConfig, updateConfig } from "../src/config.js";
 import { getTask, loadTasks, updateTask } from "../src/tasks.js";
 import { appendReplyLine, readCursor } from "../src/mailbox.js";
@@ -25,6 +26,7 @@ let setupDataC;
 let capHomeA; // 并发上限：默认上限 4 的场景
 let capHomeB; // 并发上限：ZCODE_SUB_MAX_RUNNING=2 的场景
 let ghostHome; // GUI 删除任务（刷新 404）释放并发额度的场景
+let modeHome; // config.defaultMode（合法/非法）与 --mode 覆盖的场景（独立 config，不污染共享 home）
 
 // fake Zcode 跑在本测试进程内，必须用异步 spawn——spawnSync 会冻结事件循环，
 // 让 fake 无法响应 CLI 子进程的请求。
@@ -76,6 +78,8 @@ before(async () => {
   saveConfig(capHomeB, { apiPort: fake.port, token: TOKEN });
   ghostHome = mkdtempSync(join(tmpdir(), "zcode-sub-ghost-"));
   saveConfig(ghostHome, { apiPort: fake.port, token: TOKEN });
+  modeHome = mkdtempSync(join(tmpdir(), "zcode-sub-mode-"));
+  saveConfig(modeHome, { apiPort: fake.port, token: TOKEN });
 });
 
 after(async () => {
@@ -90,6 +94,7 @@ after(async () => {
     capHomeA,
     capHomeB,
     ghostHome,
+    modeHome,
   ]) {
     rmSync(dir, { recursive: true, force: true });
   }
@@ -132,6 +137,7 @@ test("setup：开关文件不存在 → 生成（0600/enabled/port/64hex token�
   assert.ok(result.stdout.includes(join(ROOT, "bin", "zcode-sub.js")), "MCP 片段应含本包 bin 绝对路径");
   assert.match(result.stdout, /"zcode-sub"/u);
   assert.match(result.stdout, /mcp\.servers/u);
+  assert.ok(result.stdout.includes("~/.zcode/cli/config.json"), "MCP 片段说明应含配置文件位置");
 });
 
 test("setup：开关文件已存在且启用 → 复用 token/port，不重写文件", async () => {
@@ -385,6 +391,75 @@ test("run：--cwd 非绝对路径 → exit 1；省 --name 时自动生成 zsub- 
   settle(payload.name);
 });
 
+test("run：mode 解析——默认 yolo；--mode plan 覆盖；--mode 非法 exit 1 不建任务", async () => {
+  // 用户拍板：派发任务默认完全访问（yolo）
+  const def = await dispatchTask("mode-def");
+  const defCall = fake.calls.find(
+    (call) => call.method === "POST" && call.url.split("?")[0] === "/api/tasks" && call.body?.title === "mode-def",
+  );
+  assert.ok(defCall, "应有 mode-def 的建任务请求");
+  assert.equal(defCall.body.mode, "yolo", "未指定 --mode 时应默认派发 mode=yolo");
+  settle("mode-def");
+
+  const plan = await runCli(["run", "计划模式任务", "--cwd", "/tmp/mode-plan", "--name", "mode-plan", "--mode", "plan"]);
+  assert.equal(plan.status, 0, plan.stderr);
+  const planCall = fake.calls.find(
+    (call) => call.method === "POST" && call.url.split("?")[0] === "/api/tasks" && call.body?.title === "mode-plan",
+  );
+  assert.ok(planCall, "应有 mode-plan 的建任务请求");
+  assert.equal(planCall.body.mode, "plan", "--mode 应覆盖默认 yolo");
+  settle("mode-plan");
+
+  const bogus = await runCli(["run", "坏模式任务", "--cwd", "/tmp/mode-bogus", "--name", "mode-bogus", "--mode", "bogus"]);
+  assert.equal(bogus.status, 1);
+  assert.match(bogus.stderr, /合法枚举/u);
+  assert.ok(
+    !fake.calls.some(
+      (call) => call.method === "POST" && call.url.split("?")[0] === "/api/tasks" && call.body?.title === "mode-bogus",
+    ),
+    "非法 --mode 应在建任务之前拒绝",
+  );
+});
+
+test("run：config.defaultMode=plan 生效；--mode 优先于 config；非法 defaultMode 忽略按 yolo 并提示", async () => {
+  const modeEnv = { ZCODE_SUB_HOME: modeHome };
+
+  saveConfig(modeHome, { apiPort: fake.port, token: TOKEN, defaultMode: "plan" });
+  const plan = await runCli(["run", "配置默认 plan", "--cwd", "/tmp/cfg-mode-a", "--name", "cfg-plan"], modeEnv);
+  assert.equal(plan.status, 0, plan.stderr);
+  const planCall = fake.calls.find(
+    (call) => call.method === "POST" && call.url.split("?")[0] === "/api/tasks" && call.body?.title === "cfg-plan",
+  );
+  assert.ok(planCall, "应有 cfg-plan 的建任务请求");
+  assert.equal(planCall.body.mode, "plan", "config.defaultMode=plan 应生效");
+
+  // --mode 显式传入优先于 config.defaultMode
+  const override = await runCli(
+    ["run", "显式覆盖配置", "--cwd", "/tmp/cfg-mode-b", "--name", "cfg-override", "--mode", "default"],
+    modeEnv,
+  );
+  assert.equal(override.status, 0, override.stderr);
+  const overrideCall = fake.calls.find(
+    (call) => call.method === "POST" && call.url.split("?")[0] === "/api/tasks" && call.body?.title === "cfg-override",
+  );
+  assert.ok(overrideCall, "应有 cfg-override 的建任务请求");
+  assert.equal(overrideCall.body.mode, "default", "--mode 应优先于 config.defaultMode");
+
+  saveConfig(modeHome, { apiPort: fake.port, token: TOKEN, defaultMode: "bogus" });
+  const bogus = await runCli(["run", "配置默认非法", "--cwd", "/tmp/cfg-mode-c", "--name", "cfg-bogus"], modeEnv);
+  assert.equal(bogus.status, 0, bogus.stderr);
+  const bogusCall = fake.calls.find(
+    (call) => call.method === "POST" && call.url.split("?")[0] === "/api/tasks" && call.body?.title === "cfg-bogus",
+  );
+  assert.ok(bogusCall, "应有 cfg-bogus 的建任务请求");
+  assert.equal(bogusCall.body.mode, "yolo", "非法 defaultMode 应忽略并按默认 yolo");
+  assert.match(bogus.stderr, /已忽略/u);
+  assert.ok(!bogus.stdout.includes("已忽略"), "提示只进 stderr，stdout 保持一行 JSON");
+  settle("cfg-plan");
+  settle("cfg-override");
+  settle("cfg-bogus");
+});
+
 test("run：自动命名带毫秒尾巴——同秒先后两次也不同名", async () => {
   const r1 = await runCli(["run", "自动命名 A", "--cwd", "/tmp/auto-ms"]);
   assert.equal(r1.status, 0, r1.stderr);
@@ -476,6 +551,9 @@ test("send：空闲 sent；运行中 auto→queued、--steer→steered、--queue
   const steered = await runCli(["send", "send-1", "插队的话", "--steer"]);
   assert.equal(steered.status, 0, steered.stderr);
   assert.match(steered.stdout, /投递结果：steered/u);
+  // 注：fake 端点没有控制方法，无法模拟「A 侧真打断不可用 → 降级为 queued」的降级场景；
+  // 该场景下 CLI 输出按应答如实显示（透传实现，不做二次加工）——上面的 steered/queued
+  // 断言即应答原文，降级语义的覆盖在 A 侧端点测试。
 
   const forced = await runCli(["send", "send-1", "强制排队", "--queue"]);
   assert.equal(forced.status, 0, forced.stderr);
@@ -774,14 +852,26 @@ test("list --json：包含 run 过的任务；空表文本提示", async () => {
 
   const table = await runCli(["list"]);
   assert.equal(table.status, 0, table.stderr);
-  assert.equal(table.stdout.split("\n")[0], "name\ttaskId(前8位)\tlastStatus\tcreatedAt\tworkspacePath");
+  assert.equal(table.stdout.split("\n")[0], "name\ttaskId(后8位)\tlastStatus\tcreatedAt\tworkspacePath");
   const fix1Line = table.stdout.split("\n").find((line) => line.startsWith("fix-1\t"));
   assert.ok(fix1Line, "文本表应有 fix-1 行");
   const cols = fix1Line.split("\t");
   assert.equal(cols.length, 5);
+  assert.equal(cols[1], fix1.taskId.slice(-8), "文本表 taskId 应显示后 8 位");
   assert.equal(cols[2], "idle");
   assert.ok(!Number.isNaN(Date.parse(cols[3])), `createdAt 应为 ISO 时间：${cols[3]}`);
   assert.equal(cols[4], "/tmp/demo");
+});
+
+test("list 文本表：taskId 列显示后 8 位（session_ 前缀无区分度）", async () => {
+  const { taskId } = await dispatchTask("tail-1");
+  const table = await runCli(["list"]);
+  assert.equal(table.status, 0, table.stderr);
+  assert.ok(table.stdout.split("\n")[0].includes("taskId(后8位)"), "表头应为 taskId(后8位)");
+  const line = table.stdout.split("\n").find((row) => row.startsWith("tail-1\t"));
+  assert.ok(line, "文本表应有 tail-1 行");
+  assert.ok(line.includes(taskId.slice(-8)), `应含完整 taskId 的后 8 位（${taskId.slice(-8)}）：${line}`);
+  settle("tail-1");
 });
 
 test("forgetOwnership：带 workspacePath 可按工作区重绑成功；本地 workspacePath 改错 → exit 4", async () => {
@@ -802,4 +892,15 @@ test("forgetOwnership：带 workspacePath 可按工作区重绑成功；本地 w
   const mismatch = await runCli(["result", "own-1"]);
   assert.equal(mismatch.status, 4);
   assert.match(mismatch.stderr, /zcode_send_failed/u);
+});
+
+test("unwritableHomeAdvice：ZCODE_SUB_HOME 已设置 → dwc grant；未设置 → 两条 export 与重定向说明", () => {
+  const fromEnv = unwritableHomeAdvice("/var/empty/zcode-sub", true);
+  assert.ok(fromEnv.includes("✗ 状态目录不可写：/var/empty/zcode-sub"), fromEnv);
+  assert.ok(fromEnv.includes("dwc grant /var/empty/zcode-sub"), fromEnv);
+
+  const noEnv = unwritableHomeAdvice("/var/empty", false);
+  assert.ok(noEnv.includes("HOME 被重定向"), noEnv);
+  assert.ok(noEnv.includes("export ZCODE_SUB_HOME=/Users/<你的用户名>/.zcode-sub"), noEnv);
+  assert.ok(noEnv.includes("export ZCODE_DATA_BASE_DIR=/Users/<你的用户名>"), noEnv);
 });
