@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, before, test } from "node:test";
 import { startFakeZcode } from "./helpers/fake-zcode.js";
-import { createTask, getEvents, getTask, listModels, probeHealth, sendMessage, setModel, stopTask } from "../src/api.js";
+import { ApiError, createTask, getEvents, getTask, listModels, probeHealth, sendMessage, setModel, stopTask } from "../src/api.js";
 
 let fake;
 const config = {
@@ -155,7 +155,7 @@ test("createTask：mode 白名单——越界 400 bad_mode→zcode_create_failed
   assert.notEqual(plainId, taskId);
 });
 
-test("listModels：200 返回 providers/preferred；workspacePath 进 query，未传则无 query", async () => {
+test("listModels：200 返回 providers/preferred；workspacePath 进 query，未传则抛编程错误", async () => {
   const mark = fake.calls.length;
   const view = await listModels(config, "/w-models");
   assert.equal(view.preferred.providerId, "glm");
@@ -179,16 +179,20 @@ test("listModels：200 返回 providers/preferred；workspacePath 进 query，�
     "workspacePath 应进 query",
   );
 
-  // 不带 workspacePath：api 层不发 query（URL 无 ?）；假服务器按契约回 400 bad_request
-  //（CLI 层因此要求 models 必带 --cwd）
-  await assert.rejects(() => listModels(config), (error) => error.code === "zcode_send_failed" && error.status === 400);
-  assert.equal(fake.calls.at(-1).url, "/api/models");
-  assert.equal(fake.calls.length - mark, 2, "共两次调用");
+  // 不带 workspacePath：契约要求必带，api 层直接抛编程错误（不是 ApiError——不是运行期
+  // 错误码），且不发出任何 API 请求（CLI 层 cmdModels 已先把用法错误拦下）
+  const callsAfterQuery = fake.calls.length;
+  await assert.rejects(
+    () => listModels(config),
+    (error) => !(error instanceof ApiError) && /workspacePath/.test(error.message),
+  );
+  assert.equal(fake.calls.length, callsAfterQuery, "编程错误应在请求之前抛出，不产生任何 API 调用");
+  assert.equal(fake.calls.length - mark, 1, "共一次调用");
 });
 
 test("listModels：错 token 401 → zcode_unauthorized（exit 5）", async () => {
   await assert.rejects(
-    () => listModels({ ...config, token: "wrong-token" }),
+    () => listModels({ ...config, token: "wrong-token" }, "/w-models"),
     (error) => error.code === "zcode_unauthorized" && error.exitCode === 5 && error.status === 401,
   );
 });

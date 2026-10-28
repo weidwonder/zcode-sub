@@ -44,7 +44,7 @@ const USAGE = `zcode-sub 用法（把 ZCode 桌面版当子代理）：
   zcode-sub models --cwd <绝对路径> [--json]
       列可用模型（providerId/modelId/思考档位/默认档位/默认标记）；--model 与 --thought 的合法值以此为准。
   zcode-sub model <name> <providerId/modelId> [--thought <档位>]
-      给已派发任务换模型（下一轮生效；可用值先 models 查）。
+      给已派发任务换模型（下一轮生效；可用值先 models --cwd <工作区绝对路径> 查）。
   zcode-sub list [--json]
   zcode-sub mcp
       stdio MCP server（reply_to_parent 工具，配进 ZCode 的 mcp.servers）。

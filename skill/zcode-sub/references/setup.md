@@ -6,7 +6,7 @@
 
 要求 Node ≥ 22。优先「绝对路径 + shim」（`npm link` 会写全局 bin 目录，次选）。四步：
 
-1. 向用户确认 zcode-sub 仓库路径（本工具不发布 npm，本地路径或 URL）；
+1. 向用户确认 zcode-sub 仓库路径（本工具不发布 npm，本地路径或 URL；本机没有仓库时从 https://github.com/weidwonder/zcode-sub clone 到用户指定的目录）；
 2. `node --version` 确认 ≥ 22；
 3. 按 §5 模板建 shim——统一用 setup 报错输出的模板或 §5 模板，不要自己另写一份（家目录未被重定向时可省略两行 export）；
 4. `command -v zcode-sub && zcode-sub --version` 验证。
@@ -57,4 +57,4 @@ export ZCODE_DATA_BASE_DIR=/Users/<你的用户名>
 exec <仓库路径>/bin/zcode-sub.js "$@"
 ```
 
-工作区要求：`--cwd` 须为本机存在的目录绝对路径——未打开时 ZCode 会自动在当前窗口加该目录的标签页（无确认弹窗，最长等 30 秒）；远端路径或自动打开失败 → exit 3（详见 troubleshooting 码表）。
+工作区要求（`--cwd` 的合法形态、自动打开副作用与 exit 3 口径）见 SKILL.md 开头的定位与前提。

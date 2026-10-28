@@ -152,7 +152,7 @@ ln -s "$(pwd)/skill/zcode-sub" ~/.claude/skills/zcode-sub    # 或把整个目�
 - 桥接 CLI（`bin/zcode-sub.js` + `src/`，Node ≥ 22、零依赖）：只通过 127.0.0.1 上的 ZCode 本机任务 API 与 ZCode 通信；`reply_to_parent` 由 ZCode 拉起的 `zcode-sub mcp` 直写本地信箱；`skill/zcode-sub/` 是给 Claude Code 的使用说明。
 - 补丁版工具链（`patch/`，bash + 少量 Node 脚本，无服务、无长期进程）：
   - `patch/backup-zcode-data.sh` — 用户数据目录（~/.zcode）备份（SQLite 在线备份 + manifest/sha256）
-  - `patch/build-desktop.sh` — mac arm64 构建（Node/pnpm 工具链自举到 `.toolchains/`，不动全局）
+  - `patch/build-desktop.sh` — mac arm64 构建（Node/pnpm 工具链自举到 `<家目录>/.cache/zcode-sub/toolchains/`，`ZCODE_TOOLCHAIN_ROOT` 可改，见 [patch/README.md](patch/README.md)「环境变量」；不动全局）
   - `patch/install-desktop.sh` / `patch/rollback-desktop.sh` — 应用目录（/Applications）安装替换与回退（用户本人运行；旧包只 mv 不删）
   - `patch/sync-upstream.sh` — fetch 上游 → `local/patched-<短SHA>` 分支 → 按 `patch/series` 净提交 cherry-pick → typecheck/lint
   - `patch/verify-migration-checksums.mjs` — 迁移账本 checksum 门检（替换安装前必跑）

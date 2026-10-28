@@ -11,11 +11,10 @@
 ### 修复
 
 - `zcode-sub models` 不带 `--cwd` 时不再发出注定失败的请求：契约要求 `GET /api/models` 必带 workspacePath（真 ZCode 缺参回 400），此前 CLI 传 undefined 导致报错误导（`zcode_send_failed: …模型列表查询失败`）。现在 `--cwd` 缺失或非绝对路径在本地报用法错误（exit 1，`用法：zcode-sub models --cwd <工作区绝对路径> [--json]`）；usage 行与两份 README 命令表同步改为必填写法，`--model` 格式错误、api 层 `zcode_model_invalid` 的「查可选值」脱困指引与 skill 排障表同步为带 `--cwd` 的可执行用法，假测试服务器按契约对缺参回 `400 bad_request`。
-- `test/cli.test.js` 两个「目录不可写」用例在 tmpdir 带继承 ACL 的环境（macOS `ls -le` 有 ACE）下 chmod 造不出不可写、因而误红：改为 chmod 后探测目录是否真不可写，仍可写时 `t.skip("…ACL 环境下无法模拟不可写")` 并清理临时目录（`TMPDIR=/private/tmp` 下行为不变）。
 
 ### 不兼容
 
-- patch/ 脚本默认路径去个人化：五个脚本的 `REAL_HOME` 由写死 `/Users/weidwonder` 改为 `${ZCODE_REAL_HOME:-$HOME}`，`build-desktop.sh` / `sync-upstream.sh` 的 `TOOLCHAIN_ROOT` 由写死 `/Users/weidwonder/projects/.toolchains` 改为 `${ZCODE_TOOLCHAIN_ROOT:-<家目录>/.cache/zcode-sub/toolchains}`。HOME 被重定向的环境（沙箱/多账号容器）需设 `ZCODE_REAL_HOME=<真实家目录>`（或按脚本直接设 `ZCODE_ROOT` / `ZCODE_TOOLCHAIN_ROOT` / `ZCODE_BACKUP_ROOT`）；`backup-zcode-data.sh` 找不到数据目录时报错并给出该设置提示（--dry-run 同样拦截）。`patch/README.md` 新增「环境变量」一节，示例路径全部占位符化。
+- `patch/*.sh` 默认路径（`REAL_HOME` / `TOOLCHAIN_ROOT`）——旧：三个脚本（backup/install/rollback）的 `REAL_HOME` 写死 `/Users/weidwonder`，两个脚本（build/sync）的 `TOOLCHAIN_ROOT` 写死 `/Users/weidwonder/projects/.toolchains`；新：`REAL_HOME` 改为 `${ZCODE_REAL_HOME:-$HOME}`，`TOOLCHAIN_ROOT` 改为 `${ZCODE_TOOLCHAIN_ROOT:-<家目录>/.cache/zcode-sub/toolchains}`（`<家目录>` = `ZCODE_REAL_HOME`，未设时为 `$HOME`）；迁移：HOME 被重定向的环境（沙箱/多账号容器）设 `ZCODE_REAL_HOME=<真实家目录>`（或按脚本直接设 `ZCODE_ROOT` / `ZCODE_TOOLCHAIN_ROOT` / `ZCODE_BACKUP_ROOT`）；想复用旧工具链设 `ZCODE_TOOLCHAIN_ROOT=<家目录>/projects/.toolchains`，否则可删除旧目录（下次构建会重新下载约 40 MB）。`backup-zcode-data.sh` 找不到数据目录时报错并给出该设置提示（--dry-run 同样拦截）；`patch/README.md` 新增「环境变量」一节，示例路径全部占位符化；兼容取舍详见 patch spec §8.1。
 - 传输层整体切换：`zcode-sub` 从 ZCode Webhook Bot 入站（契约 v1）改为 ZCode 本机任务 API（契约 v2）。旧调用方式：配置 botId/secret、GUI 建 Webhook bot、bind code 绑定、`setup --bot-id/--bind-code/--secret/--daemon-port/--ingress-port`；新调用方式：`zcode-sub setup`（写 `~/.zcode/v2/local-task-api.json`，token 自动生成），`run` 直接建 ZCode 普通对话（多任务并行），`send` 运行中可补充消息（auto/steer/queue）。迁移：删除旧 `~/.zcode-sub` 重跑 setup。原因：用户要求多对话并行与运行中补消息，v1 单 bot 单会话且无 steer（spec §14 决策 D-v2-01）。
 - 桥接 daemon（`zcode-sub daemon` 子命令、出站回调接收、`/internal/reply` HTTP 面）删除——v2 为拉模式（events 长轮询），`reply_to_parent` 改为 MCP 进程直写信箱文件。
 - 退出码 6（未绑定）删除；退出码表变为 2/3/4/5/7/8（3 的语义改为 workspace_not_open，8 为并发上限；完整闭集见 spec §3）。
@@ -58,6 +57,7 @@
 
 ### 内部
 
+- `test/cli.test.js` 两个「目录不可写」用例在 tmpdir 带继承 ACL 的环境（macOS `ls -le` 有 ACE）下 chmod 造不出不可写、因而误红：改为 chmod 后探测目录是否真不可写，仍可写时 `t.skip("…ACL 环境下无法模拟不可写")` 并清理临时目录（`TMPDIR=/private/tmp` 下行为不变）。
 - `patch/series` 的三个补丁提交号更新为 `76dc288b` / `3179cb1f` / `708c29dc`：ZCode 侧这三个提交改写了作者邮箱（内容不变），旧提交号已不存在。
 - engineering-context：ZCode 依赖声明更新为 v2 接口清单；bots-webhook 事实卡保留 v1 会话语义结论（决策记录考古用）。
 - spec（`docs/spec/2026-10-27-zcode-sub-patch-tooling-eng-spec.md`）、ZCode 上游事实卡（`engineering-context/dependencies/ZCode/`）与依赖声明（`engineering-context/dependencies/ZCode.md`）。

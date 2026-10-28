@@ -153,7 +153,7 @@ Environment variables:
 - Bridge CLI (`bin/zcode-sub.js` + `src/`, Node ≥ 22, zero dependencies): talks to ZCode exclusively through the local task API on 127.0.0.1; `reply_to_parent` is written by the ZCode-spawned `zcode-sub mcp` directly into a local mailbox; `skill/zcode-sub/` is the Claude Code-facing usage guide.
 - Patch toolchain (`patch/`, bash + a few Node scripts, no services, no long-running processes):
   - `patch/backup-zcode-data.sh` — backs up the user data dir (~/.zcode) (online SQLite backup + manifest/sha256)
-  - `patch/build-desktop.sh` — mac arm64 build (Node/pnpm toolchain bootstrapped into `.toolchains/`, global untouched)
+  - `patch/build-desktop.sh` — mac arm64 build (Node/pnpm toolchain bootstrapped into `<home>/.cache/zcode-sub/toolchains/`, override with `ZCODE_TOOLCHAIN_ROOT`, see the environment-variables section of [patch/README.md](patch/README.md) (in Chinese); global untouched)
   - `patch/install-desktop.sh` / `patch/rollback-desktop.sh` — install/replace and roll back the app bundle in /Applications (run by the user; old bundles are moved, never deleted)
   - `patch/sync-upstream.sh` — fetch upstream → `local/patched-<shortSHA>` branch → cherry-pick the clean commits from `patch/series` → typecheck/lint
   - `patch/verify-migration-checksums.mjs` — migration-ledger checksum gate (run before every replace-install)
