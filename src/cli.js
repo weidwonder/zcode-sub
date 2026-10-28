@@ -26,9 +26,11 @@ const USAGE = `zcode-sub 用法（把 ZCode 桌面版当子代理）：
       在 ZCode 该工作区新建对话执行任务（多任务可并行）；stdout 一行 JSON。默认 yolo（完全访问）。
       --mode 枚举：default/yolo/guarded/plan/edit/acceptEdits/auto/dontAsk/bypassPermissions/autoEdit/build。
       --model/--thought 按模型选择派发（可用值先 zcode-sub models 查；不传用 ZCode 默认或 config 的 defaultModel）。
-  zcode-sub send <name> "<消息>" [--steer|--queue]
+  zcode-sub send <name> "<消息>" [--steer|--queue|--interrupt]
       补充消息：默认 auto（运行中的去向由会话设置决定，GUI 默认排队；要即时打断用 --steer）；
       --steer 强制引导打断（应答仅为受理，注入结果以事件流为准）、--queue 强制排队；
+      --interrupt 截断当前生成（停止→等回空闲→作为新一轮发送，未完成内容丢弃）；--steer 为
+      ZCode 原生引导（在当前步骤结束时注入，长文本生成时可能要等较久）；三者互斥。
       任务空闲时即接续对话（sent）。
   zcode-sub wait <name> [--timeout 秒]
       阻塞等新事件或子代理主动消息（适合后台运行，退出即唤醒本轮）；超时输出 TIMEOUT（退出码 2）。
@@ -112,7 +114,7 @@ export async function runCli(argv) {
 const COMMAND_FLAGS = {
   setup: new Set(["api-port"]),
   run: new Set(["cwd", "name", "mode", "model", "thought"]),
-  send: new Set(["steer", "queue"]),
+  send: new Set(["steer", "queue", "interrupt"]),
   wait: new Set(["timeout"]),
   result: new Set(),
   resume: new Set(),
@@ -462,7 +464,10 @@ function resolveModelSelection(flags, config) {
   return { providerId, modelId, ...(reasoningLevel ? { options: { reasoningLevel } } : {}) };
 }
 
-// 派发/换模型前按 GET /api/models 预校验：模型不存在或档位非法时给出可选列表（exit 1）
+// 派发/换模型前按 GET /api/models 预校验：模型不存在或档位非法时给出可选列表（exit 1）。
+// 校验通过后返回（可能补全默认档位的）selection：未指定档位且模型有档位列表时按
+// max 优先 → defaultThoughtLevel → 末档兜底补默认（真机：ZCode 对有档位的模型拒绝
+// 无 reasoningLevel 的建会话）；显式给了档位或模型无档位则原样返回。
 async function validateModelSelection(config, workspacePath, selection) {
   const view = await api.listModels(config, workspacePath);
   const providers = Array.isArray(view?.providers) ? view.providers : [];
@@ -481,9 +486,9 @@ async function validateModelSelection(config, workspacePath, selection) {
     err.exitCode = 1;
     throw err;
   }
+  const levels = Array.isArray(model.thoughtLevels) ? model.thoughtLevels : [];
   const wanted = selection.options?.reasoningLevel;
   if (wanted !== undefined) {
-    const levels = Array.isArray(model.thoughtLevels) ? model.thoughtLevels : [];
     if (levels.length === 0) {
       const err = new Error(
         `zcode_model_invalid: 模型 ${selection.providerId}/${selection.modelId} 无思考档位，去掉 --thought；档位可显式传 --thought 覆盖（若来自 config defaultModel 可修改配置）`,
@@ -500,7 +505,18 @@ async function validateModelSelection(config, workspacePath, selection) {
       err.exitCode = 1;
       throw err;
     }
+    return selection;
   }
+  if (levels.length > 0) {
+    const level = levels.includes("max")
+      ? "max"
+      : typeof model.defaultThoughtLevel === "string" && levels.includes(model.defaultThoughtLevel)
+        ? model.defaultThoughtLevel
+        : levels[levels.length - 1];
+    process.stderr.write(`ℹ 未指定思考档位，已用 ${selection.providerId}/${selection.modelId} 的默认档位 ${level}\n`);
+    return { ...selection, options: { reasoningLevel: level } };
+  }
+  return selection;
 }
 
 async function cmdRun(home, flags) {
@@ -526,10 +542,10 @@ async function cmdRun(home, flags) {
   const config = requireConfig(home);
   // 偏离#17：--model/--thought（优先级高于 config.defaultModel）合成 modelSelection；
   // 非 null 时先按 /api/models 预校验，模型/档位非法在此拦下，不触 createTask。
-  const modelSelection = resolveModelSelection(flags, config);
-  if (modelSelection !== null) {
-    await validateModelSelection(config, cwd, modelSelection);
-  }
+  // 预校验会补全默认档位（未指定 --thought 且模型有档位时），用返回值进 createTask body。
+  const resolvedSelection = resolveModelSelection(flags, config);
+  const modelSelection =
+    resolvedSelection !== null ? await validateModelSelection(config, cwd, resolvedSelection) : null;
   // mode 解析：--mode 显式优先（已校验）；其次 config.defaultMode（合法才用）；否则
   // 默认 yolo（完全访问）。config.defaultMode 非法时忽略并提示，不阻断派发。
   let mode;
@@ -618,10 +634,39 @@ async function cmdSend(home, flags) {
   const name = flags._[0];
   const message = flags._[1];
   if (!name || message === undefined) {
-    throw usageError('用法：zcode-sub send <name> "<消息>" [--steer|--queue]');
+    throw usageError('用法：zcode-sub send <name> "<消息>" [--steer|--queue|--interrupt]');
+  }
+  // 三者互斥（--interrupt 截断重发、--steer 引导、--queue 排队，语义互不相容）；
+  // 用法错误先于任务查找拦下（与其它 flag 校验同口径）。
+  if (flags.interrupt && (flags.steer || flags.queue)) {
+    throw usageError("--interrupt 与 --steer/--queue 互斥");
   }
   const task = requireTask(home, name);
   const config = requireConfig(home);
+  // --interrupt：先停当前生成，等回空闲，再作为新一轮发送（未完成内容丢弃）。
+  if (flags.interrupt) {
+    await api.stopTask(config, task.taskId, task.workspacePath);
+    process.stdout.write("✓ 已请求停止；等待任务回到空闲…\n");
+    // 有界轮询：500ms 一次直到 idle/error；超限按发送失败处理（消息未发出，不静默重投）
+    const limitMs = Number.parseInt(process.env.ZCODE_SUB_INTERRUPT_TIMEOUT_MS ?? "15000", 10) || 15000;
+    const deadline = Date.now() + limitMs;
+    let status;
+    for (;;) {
+      const payload = await api.getTask(config, task.taskId, task.workspacePath);
+      status = payload?.status;
+      if (status === "idle" || status === "error") break;
+      if (Date.now() >= deadline) {
+        const err = new Error(
+          `zcode_send_failed: 任务在 ${limitMs}ms 内未回到空闲（status=${status}），消息未发送——用 zcode-sub result ${name} 查看状态后重试`,
+        );
+        err.code = "zcode_send_failed";
+        err.exitCode = 4;
+        throw err;
+      }
+      await new Promise((r) => setTimeout(r, 500));
+    }
+    process.stdout.write("✓ 已截断当前生成，未完成内容丢弃\n");
+  }
   const delivery = flags.steer ? "steer" : flags.queue ? "queue" : "auto";
   // 幂等键：与 run 同规则（"zsub-"+UUID，总长 41）；网络失败同键安全重试一次，不双投
   const clientRequestId = "zsub-" + randomUUID();
@@ -719,12 +764,13 @@ async function cmdModel(home, flags) {
   }
   const task = requireTask(home, name);
   const config = requireConfig(home);
-  const selection = resolveModelSelection({ model: modelRef, thought: flags.thought }, config);
-  // flags._[1] 无斜杠会在 resolveModelSelection 报格式错，selection 实际必非 null；兜底防御。
-  if (selection === null) {
+  const base = resolveModelSelection({ model: modelRef, thought: flags.thought }, config);
+  // flags._[1] 无斜杠会在 resolveModelSelection 报格式错，base 实际必非 null；兜底防御。
+  if (base === null) {
     throw usageError("--model 格式应为 <providerId>/<modelId>，例如 glm/glm-4.7；可用列表 zcode-sub models");
   }
-  await validateModelSelection(config, task.workspacePath, selection);
+  // 预校验返回补全默认档位后的 selection（未指定 --thought 且模型有档位时），进 setModel body
+  const selection = await validateModelSelection(config, task.workspacePath, base);
   // 幂等键与 run/send 同规则；端点侧为独立 model 命名空间（偏离#20）
   await api.setModel(config, task.taskId, selection, task.workspacePath, "zsub-" + randomUUID());
   process.stdout.write(
@@ -845,24 +891,47 @@ async function cmdWait(home, flags) {
         if (event.type === "turn.completed") patch.lastStatus = "idle";
         if (event.type === "turn.failed") patch.lastStatus = "error";
       }
-      // 批级总量闸：累计超限即停止逐条打印（游标照常推进到 payload.nextSeq，不丢数据）
+      // 同轮合并输出：拿到事件批后再读一次信箱，把游标后的 reply 行与事件按时间先后
+      // 合并打印（真机：reply 早于 assistant.message 写入，只打事件批会把 reply 漏到
+      // 下一轮甚至丢给超时）。合并流：事件（at）与 reply（ts）按时间升序，同值时事件
+      // 在前（Array.sort 稳定，先放事件）。
+      const lines = readMailboxLines(home, name);
+      const cursor = readCursor(home, name);
+      const pendingReplies = lines.slice(cursor);
+      const merged = [
+        ...events.map((event) => ({ at: event.at, kind: "event", event })),
+        ...pendingReplies.map((line) => ({ at: line.ts, kind: "reply", line })),
+      ].sort((a, b) => a.at - b.at);
+      // 批级总量闸：累计超限即停止逐条打印（事件游标推进到 payload.nextSeq、信箱游标推进
+      // 到全部行数，不丢数据）；事件与 reply 一并计入 skipped。
       let written = 0;
       let skipped = 0;
-      for (const event of events) {
+      for (const item of merged) {
         if (written >= WAIT_OUTPUT_LIMIT) {
           skipped += 1;
           continue;
         }
-        written += writeEventLine(event, ownSteerIds);
-        if (event.type === "permission.requested") {
-          const hint = "⏳ 请在 ZCode GUI 处理该权限请求\n";
-          process.stdout.write(hint);
-          written += hint.length;
+        if (item.kind === "event") {
+          written += writeEventLine(item.event, ownSteerIds);
+          if (item.event.type === "permission.requested") {
+            const hint = "⏳ 请在 ZCode GUI 处理该权限请求\n";
+            process.stdout.write(hint);
+            written += hint.length;
+          }
+        } else {
+          const text = typeof item.line.text === "string" ? item.line.text : String(item.line.text);
+          const output =
+            text.length > WAIT_OUTPUT_LIMIT
+              ? `[reply] ${text.slice(0, EVENT_TEXT_LIMIT)}\n…（共 ${text.length} 字符，全文见 ${mailboxPath(home, name)}）\n`
+              : `[reply] ${text}\n`;
+          process.stdout.write(output);
+          written += output.length;
         }
       }
       if (skipped > 0) {
-        process.stdout.write(`…（本批剩余 ${skipped} 条略过，全文用 result 或 ZCode GUI 查看）\n`);
+        process.stdout.write(`…（本批剩余 ${skipped} 条略过，全文用 result / 信箱文件或 ZCode GUI 查看）\n`);
       }
+      writeCursor(home, name, lines.length);
       tasks.updateTask(home, name, patch);
       return;
     }

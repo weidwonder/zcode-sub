@@ -21,9 +21,9 @@ zcode-sub wait <name>
 
 每次 wait 唤醒看输出分流：终态事件 → `zcode-sub result <name>` 收尾；`[reply]` → 处理子代理汇报后再 wait；TIMEOUT / 其他过程事件 → 再 wait；result 说还在跑（排队消息可能开了新一轮）→ 回到 wait。
 不传 `--name` 时任务名自动生成（`zsub-日期-时间`），从 run 输出的 JSON 里取 `name` 再 wait。
-按模型派发/换模型：`zcode-sub models --cwd <与 run 相同的工作区>` 查可用值（`run --model <providerId/modelId> [--thought <档位>]`；`zcode-sub model <name> <p/m>` 换已派发任务的模型——运行中也可以，下一轮生效）。
+按模型派发/换模型：`zcode-sub models --cwd <与 run 相同的工作区>` 查可用值（`run --model <providerId/modelId> [--thought <档位>]`；`zcode-sub model <name> <p/m>` 换已派发任务的模型——运行中也可以，下一轮生效）。未指定 --thought 时自动用默认档位（max 优先），实际档位看 stderr 提示。
 
-运行中补充用 `send`（`--steer` 请求打断当前生成；应答 `steered` 仅为受理）；空闲续聊用 `resume`；停止用 `stop`。前台跑 wait 时传小于工具上限的 `--timeout`（如 540 秒）；后台运行的 wait 被工具杀掉视同 TIMEOUT，再等一次。
+运行中补充用 `send`：`--steer` = ZCode 原生引导（当前步骤结束时注入，长文本生成时可能要等较久）；`--interrupt` = 立即截断（停止当前生成→等回空闲→消息作为新一轮发送，「未完成内容丢弃」，与 --steer/--queue 互斥）——要可靠立即改向用 `--interrupt`；空闲续聊用 `resume`；停止用 `stop`。前台跑 wait 时传小于工具上限的 `--timeout`（如 540 秒）；后台运行的 wait 被工具杀掉视同 TIMEOUT，再等一次。
 
 wait 输出判读：
 
@@ -32,7 +32,7 @@ wait 输出判读：
 | `[turn.completed]` / `[turn.failed]` | 该轮终了 → result 取全文（终态以 result 的状态为准） |
 | `[reply] <文本>` | 子代理主动汇报 → 处理后再 wait；需要答复时用 send <name> "<答复>" |
 | `[permission.requested]` | 告知用户在 ZCode GUI 审批该权限，等处理后再 wait（权限不经本工具批） |
-| `[input.steered] 你的引导已受理（commandId=…）` | 你的 `--steer` 被受理，注入结果看后续 steer.injected / steer.fellBack |
+| `[input.steered] 你的引导已受理（commandId=…）` | 你的 `--steer` 被受理（该事件受上游已知问题影响可能不出现——引导结果只看 steer.injected / steer.fellBack） |
 | `[input.steered] 来自 GUI 侧的引导（commandId=…）` | 用户在 GUI 手动引导同一任务——不是你的操作，别误当结果 |
 | `[steer.injected]` | 引导生效 |
 | `[steer.fellBack]` | 引导被降级/拒绝——先看后续有没有 input.queued（已转排队就不重发）；没有再用 send --queue 重发 |
@@ -56,5 +56,5 @@ zcode-sub run "补测试" --cwd /repo-wt --name tests   # 改代码的任务分�
 # Bash 工具后台各跑：wait audit、wait tests；按判读表分流，见终态事件后 result 收尾
 ```
 
-案例二（运行中引导）：`zcode-sub send <name> "改用方案 B" --steer` → wait 先见「你的引导已受理（commandId=…）」，再见 `[steer.injected]`（生效）或 `[steer.fellBack]`（被降级/拒绝，按判读表 fellBack 行处理）。
+案例二（运行中改向）：要等当前步骤结束再注入用 `--steer`（wait 看 `[steer.injected]` 生效 / `[steer.fellBack]` 被降级，按判读表处理）；要立即改向用 `zcode-sub send <name> "改用方案 B" --interrupt`（截断当前生成，未完成内容丢弃，消息作为新一轮发送）。
 案例三（按模型派发）：`zcode-sub models --cwd /repo` 选出 glm/glm-4.7 与档位 high → `zcode-sub run "<任务>" --cwd /repo --model glm/glm-4.7 --thought high`；遇 `zcode_model_invalid` 按报错列出的可选值改。

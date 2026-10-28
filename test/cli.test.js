@@ -618,13 +618,19 @@ test("run：defaultModel 档位继承收窄——换模型不继承；同模型/
   assert.deepEqual(createBodyOf("cfg-m-flash").modelSelection, { providerId: "glm", modelId: "glm-4.7-flash" });
   settle("cfg-m-flash");
 
-  // 2) --model 换到别的模型：同样不继承
+  // 2) --model 换到别的模型：不继承配置档位 high；但未指定 --thought 时按该模型
+  //    thoughtLevels 补默认档位（gpt-5 无 max，defaultThoughtLevel=low 回落）→ low
   const other = await runCli(
     ["run", "换别的模型", "--cwd", "/tmp/cfg-m-other", "--name", "cfg-m-other", "--model", "openai/gpt-5"],
     modelsEnv,
   );
   assert.equal(other.status, 0, other.stderr);
-  assert.deepEqual(createBodyOf("cfg-m-other").modelSelection, { providerId: "openai", modelId: "gpt-5" });
+  assert.match(other.stderr, /默认档位 low/u);
+  assert.deepEqual(createBodyOf("cfg-m-other").modelSelection, {
+    providerId: "openai",
+    modelId: "gpt-5",
+    options: { reasoningLevel: "low" },
+  });
   settle("cfg-m-other");
 
   // 3) --model 与 defaultModel 是同一模型（providerId/modelId 都相同）：继承配置档位 high
@@ -658,6 +664,65 @@ test("run：defaultModel 档位继承收窄——换模型不继承；同模型/
     options: { reasoningLevel: "off" },
   });
   settle("cfg-m-over");
+});
+
+test("未指定 --thought 用默认档位：max 优先、defaultThoughtLevel 回落、末档兜底", async () => {
+  const createBodyOf = (name) => {
+    const call = fake.calls.find(
+      (entry) => entry.method === "POST" && entry.url.split("?")[0] === "/api/tasks" && entry.body?.title === name,
+    );
+    assert.ok(call, `应有 ${name} 的建任务请求`);
+    return call.body;
+  };
+
+  // 1) max 优先：glm-5.3 档位列表含 max → 默认 max
+  const maxFirst = await runCli([
+    "run", "默认档位max", "--cwd", "/tmp/def-max", "--name", "def-max", "--model", "glm/glm-5.3",
+  ]);
+  assert.equal(maxFirst.status, 0, maxFirst.stderr);
+  assert.match(maxFirst.stderr, /默认档位 max/u);
+  assert.deepEqual(createBodyOf("def-max").modelSelection, {
+    providerId: "glm",
+    modelId: "glm-5.3",
+    options: { reasoningLevel: "max" },
+  });
+  settle("def-max");
+
+  // 2) defaultThoughtLevel 回落：gpt-5 无 max，defaultThoughtLevel=low → low
+  const lowFall = await runCli([
+    "run", "默认档位low", "--cwd", "/tmp/def-low", "--name", "def-low", "--model", "openai/gpt-5",
+  ]);
+  assert.equal(lowFall.status, 0, lowFall.stderr);
+  assert.match(lowFall.stderr, /默认档位 low/u);
+  assert.equal(createBodyOf("def-low").modelSelection.options.reasoningLevel, "low");
+  settle("def-low");
+
+  // 3) 末档兜底：glm-4.7 无 max 无 defaultThoughtLevel → 列表最后一个 high
+  const lastResort = await runCli([
+    "run", "默认档位high", "--cwd", "/tmp/def-high", "--name", "def-high", "--model", "glm/glm-4.7",
+  ]);
+  assert.equal(lastResort.status, 0, lastResort.stderr);
+  assert.match(lastResort.stderr, /默认档位 high/u);
+  assert.equal(createBodyOf("def-high").modelSelection.options.reasoningLevel, "high");
+  settle("def-high");
+
+  // 4) 显式 --thought：不打默认档位提示，原样透传
+  const explicit = await runCli([
+    "run", "显式档位", "--cwd", "/tmp/def-explicit", "--name", "def-explicit", "--model", "glm/glm-5.3", "--thought", "medium",
+  ]);
+  assert.equal(explicit.status, 0, explicit.stderr);
+  assert.ok(!explicit.stderr.includes("默认档位"), `显式给档位不应打默认档位提示：${explicit.stderr}`);
+  assert.equal(createBodyOf("def-explicit").modelSelection.options.reasoningLevel, "medium");
+  settle("def-explicit");
+
+  // 5) 无档位模型：不打提示、body 不含 options（既有行为保持）
+  const noLevels = await runCli([
+    "run", "无档位不打提示", "--cwd", "/tmp/def-flash", "--name", "def-flash", "--model", "glm/glm-4.7-flash",
+  ]);
+  assert.equal(noLevels.status, 0, noLevels.stderr);
+  assert.ok(!noLevels.stderr.includes("默认档位"), `无档位模型不应打默认档位提示：${noLevels.stderr}`);
+  assert.deepEqual(createBodyOf("def-flash").modelSelection, { providerId: "glm", modelId: "glm-4.7-flash" });
+  settle("def-flash");
 });
 
 test("models：文本表含表头/模型/默认标记；--json 输出可解析", async () => {
@@ -838,6 +903,20 @@ test("run：--model 预校验遇工作区未打开（409）→ 同为 exit 3（�
   );
 });
 
+test("run：工作区打开超时（409 workspace_open_timeout）→ exit 3 同 code，stderr 含超时文案", async () => {
+  const result = await runCli(["run", "打开超时任务", "--cwd", "/workspace-open-timeout", "--name", "ws-timeout"]);
+  assert.equal(result.status, 3);
+  assert.match(result.stderr, /zcode_workspace_not_open/u);
+  assert.match(result.stderr, /打开该工作区超时/u);
+});
+
+test("run：工作区路径非法（400 workspace_path_invalid）→ exit 1 zcode_workspace_path_invalid", async () => {
+  const result = await runCli(["run", "路径非法任务", "--cwd", "/workspace-bad-path", "--name", "ws-badpath"]);
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /zcode_workspace_path_invalid/u);
+  assert.match(result.stderr, /工作区路径非法/u);
+});
+
 test("并行两任务：taskId 不同；wait A 立即拿到事件且 eventsSeq 推进；wait B 超时", async () => {
   const a = await dispatchTask("para-a");
   const b = await dispatchTask("para-b");
@@ -967,6 +1046,53 @@ test("send：body 带幂等键；空闲 --steer 应答 sent", async () => {
   settle("n1");
 });
 
+test("send --interrupt：停止→等回空闲→新一轮发送；超时与互斥", async () => {
+  // 成功路径：先 POST stop，有界轮询等回 idle 后再作为新一轮发送（delivery=auto）
+  const { taskId } = await dispatchTask("itp-1");
+  fake.createTaskAlreadyRunning(taskId);
+  const callsBefore = fake.calls.length;
+  const pending = runCli(["send", "itp-1", "改方向", "--interrupt"]);
+  await new Promise((resolve) => setTimeout(resolve, 400));
+  fake.setTaskStatus(taskId, "idle");
+  const result = await pending;
+  assert.equal(result.status, 0, result.stderr);
+  const stopAt = result.stdout.indexOf("已请求停止");
+  const cutAt = result.stdout.indexOf("已截断当前生成，未完成内容丢弃");
+  const sentAt = result.stdout.indexOf("投递结果：sent");
+  assert.ok(stopAt !== -1, `stdout 应含已请求停止：${result.stdout}`);
+  assert.ok(cutAt !== -1, `stdout 应含截断提示：${result.stdout}`);
+  assert.ok(sentAt !== -1, `stdout 应含投递结果：${result.stdout}`);
+  assert.ok(stopAt < cutAt && cutAt < sentAt, `输出顺序应为 停止→截断→投递：${result.stdout}`);
+
+  const window = fake.calls.slice(callsBefore);
+  assert.ok(
+    window.some((call) => call.method === "POST" && call.url.split("?")[0] === `/api/tasks/${taskId}/stop`),
+    "此前应有对 stop 端点的 POST",
+  );
+  const messagesCalls = window.filter((call) => call.url.split("?")[0].endsWith("/messages"));
+  assert.equal(messagesCalls.length, 1, "回空闲后应恰好一次 messages 发送");
+  assert.equal(messagesCalls[0].body.delivery, "auto");
+  assert.match(messagesCalls[0].body.clientRequestId, /^zsub-/u);
+  settle("itp-1");
+
+  // 超时路径：任务一直 running → 有界轮询超限 exit 4，消息不发送
+  const { taskId: timeoutTaskId } = await dispatchTask("itp-2");
+  fake.createTaskAlreadyRunning(timeoutTaskId);
+  const msgsBefore = fake.calls.filter((call) => call.url.split("?")[0].endsWith("/messages")).length;
+  const timedOut = await runCli(["send", "itp-2", "改方向", "--interrupt"], { ZCODE_SUB_INTERRUPT_TIMEOUT_MS: "800" });
+  assert.equal(timedOut.status, 4);
+  assert.match(timedOut.stderr, /未回到空闲/u);
+  assert.match(timedOut.stderr, /消息未发送/u);
+  const msgsAfter = fake.calls.filter((call) => call.url.split("?")[0].endsWith("/messages")).length;
+  assert.equal(msgsAfter, msgsBefore, "超时路径不应发送消息");
+  settle("itp-2");
+
+  // 互斥：--interrupt 与 --steer 同给 → exit 1 用法错误
+  const conflict = await runCli(["send", "itp-2", "x", "--interrupt", "--steer"]);
+  assert.equal(conflict.status, 1);
+  assert.match(conflict.stderr, /互斥/u);
+});
+
 test("resume：空闲接续 sent；运行中拒绝（exit 4 busy_for_resume）", async () => {
   const { taskId } = await dispatchTask("res-1");
 
@@ -1084,6 +1210,61 @@ test("wait：长轮询挂起中事件到达 → 立即唤醒而非等满超时",
   settle("wait-live");
 });
 
+test("wait 同轮合并输出：reply 与事件按时间先后交错", async () => {
+  const { taskId } = await dispatchTask("merge-1");
+
+  // wait 先挂进长轮询，reply 先落、事件后到（间隔 2ms 保证 ts < at）：同一轮 wait
+  // 应把两者按时间先后合并打印，而不是只打事件批把 reply 漏给下一轮
+  const callsBefore = fake.calls.length;
+  const pending = runCli(["wait", "merge-1", "--timeout", "8"]);
+  const t0 = Date.now();
+  while (fake.calls.length === callsBefore && Date.now() - t0 < 5000) {
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  }
+  assert.ok(fake.calls.length > callsBefore, "wait 的 events 请求应已到达 fake（长轮询已挂上）");
+  appendReplyLine(home, "merge-1", "先到的汇报");
+  await new Promise((resolve) => setTimeout(resolve, 2));
+  fake.emitEvent(taskId, "assistant.message", { text: "后到的事件" });
+
+  const first = await pending;
+  assert.equal(first.status, 0, first.stderr);
+  const replyAt = first.stdout.indexOf("[reply] 先到的汇报");
+  const eventAt = first.stdout.indexOf("[assistant.message] 后到的事件");
+  assert.ok(replyAt !== -1, `应打印先到的 reply：${first.stdout}`);
+  assert.ok(eventAt !== -1, `应打印后到的事件：${first.stdout}`);
+  assert.ok(replyAt < eventAt, `reply（先写）应排在事件（后到）之前：${first.stdout}`);
+
+  // 两路游标均已推进：再 wait 无新内容 → TIMEOUT，无重放
+  const again = await runCli(["wait", "merge-1", "--timeout", "1"]);
+  assert.equal(again.status, 2);
+  assert.equal(again.stdout, "TIMEOUT\n");
+  settle("merge-1");
+});
+
+test("wait 同轮合并输出（反序）：事件先到则事件行在前", async () => {
+  const { taskId } = await dispatchTask("merge-2");
+
+  // 反序：事件先落、reply 紧随（同一 tick 内背靠背写入——emitEvent 会立刻唤醒长轮询，
+  // 中间留间隔会让 CLI 抢在 reply 落盘前读信箱；同毫秒时 sort 稳定、事件在前）
+  const callsBefore = fake.calls.length;
+  const pending = runCli(["wait", "merge-2", "--timeout", "8"]);
+  const t0 = Date.now();
+  while (fake.calls.length === callsBefore && Date.now() - t0 < 5000) {
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  }
+  fake.emitEvent(taskId, "assistant.message", { text: "先到的事件" });
+  appendReplyLine(home, "merge-2", "后到的汇报");
+
+  const first = await pending;
+  assert.equal(first.status, 0, first.stderr);
+  const eventAt = first.stdout.indexOf("[assistant.message] 先到的事件");
+  const replyAt = first.stdout.indexOf("[reply] 后到的汇报");
+  assert.ok(eventAt !== -1, `应打印先到的事件：${first.stdout}`);
+  assert.ok(replyAt !== -1, `应打印后到的 reply：${first.stdout}`);
+  assert.ok(eventAt < replyAt, `事件（先到）应排在 reply（后写）之前：${first.stdout}`);
+  settle("merge-2");
+});
+
 test("wait：事件正文超 2000 字符截断（reply 信箱行保持全文）", async () => {
   const { taskId } = await dispatchTask("tr-1");
 
@@ -1111,7 +1292,7 @@ test("wait：事件批超 20000 字符 → 略过提示 + lastStatus/游标照�
 
   const got = await runCli(["wait", "bulk-ev", "--timeout", "3"]);
   assert.equal(got.status, 0, got.stderr);
-  assert.match(got.stdout, /…（本批剩余 \d+ 条略过，全文用 result 或 ZCode GUI 查看）/u);
+  assert.match(got.stdout, /…（本批剩余 \d+ 条略过，全文用 result \/ 信箱文件或 ZCode GUI 查看）/u);
   assert.ok(got.stdout.length < 25_000, `stdout 应小于 25000 字符，实际 ${got.stdout.length}`);
   assert.ok(got.stdout.includes("e0-"), "上限内的事件应照常打印");
   assert.ok(!got.stdout.includes("e28-"), "超限后的事件不应逐条打印");

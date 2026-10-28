@@ -73,15 +73,18 @@ export async function startFakeZcode({ token = "test-token", port: listenPort = 
   let shuttingDown = false;
   let failNextCreatePromptFlag = false; // 一次性：下一次建任务回 201 + warning first_prompt_failed
   let opUnavailableFlag = false; // Host 退出模拟：开启后全部 op 请求结清 503 unavailable_host
-  // 偏离#18 模型目录（可被 setModels 覆盖）；preferred 形体即 modelSelection、可原样回传
+  // 偏离#18 模型目录（可被 setModels 覆盖）；preferred 形体即 modelSelection、可原样回传。
+  // glm-5.3 带 max 档位、gpt-5 带 defaultThoughtLevel：供「未指定 --thought 用默认档位」
+  // 的三条兜底路径（max 优先 / defaultThoughtLevel 回落 / 末档兜底）分别取材。
   let modelsPayload = {
     providers: [
       { providerId: "glm", displayName: "glm", models: [
         { modelId: "glm-4.7", displayName: "glm-4.7", thoughtLevels: ["off", "medium", "high"], isDefault: true },
         { modelId: "glm-4.7-flash", displayName: "glm-4.7-flash", thoughtLevels: [], isDefault: false },
+        { modelId: "glm-5.3", displayName: "glm-5.3", thoughtLevels: ["off", "medium", "high", "max"], isDefault: false },
       ] },
       { providerId: "openai", displayName: "openai", models: [
-        { modelId: "gpt-5", displayName: "gpt-5", thoughtLevels: ["low", "medium", "high"], isDefault: false },
+        { modelId: "gpt-5", displayName: "gpt-5", thoughtLevels: ["low", "medium", "high"], defaultThoughtLevel: "low", isDefault: false },
       ] },
     ],
     preferred: { providerId: "glm", modelId: "glm-4.7" },
@@ -248,9 +251,18 @@ export async function startFakeZcode({ token = "test-token", port: listenPort = 
           json(response, 400, { error: "bad_model_selection" });
           return;
         }
-        // 未打开的工作区（远端工作区同码）→ 409
+        // 未打开的工作区（远端工作区同码）→ 409；打开超时 → 409 workspace_open_timeout；
+        // 路径非法 → 400 workspace_path_invalid（A 侧预留错误，B 侧先映射）
         if (body.workspacePath === "/workspace-closed" || body.workspacePath === "/workspace-remote") {
           json(response, 409, { error: "workspace_not_open" });
+          return;
+        }
+        if (body.workspacePath === "/workspace-open-timeout") {
+          json(response, 409, { error: "workspace_open_timeout" });
+          return;
+        }
+        if (body.workspacePath === "/workspace-bad-path") {
+          json(response, 400, { error: "workspace_path_invalid" });
           return;
         }
         // 偏离#13 一次性开关：任务照常创建，但回 201 + warning（首条 prompt 投递失败）

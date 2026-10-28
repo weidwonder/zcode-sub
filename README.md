@@ -46,7 +46,7 @@ exec /path/to/zcode-sub/bin/zcode-sub.js "$@"
 |---|---|
 | `zcode-sub setup [--api-port …]` | 写/读开关文件、健康检查、打印 MCP 配置 |
 | `zcode-sub run "<任务>" --cwd <绝对路径> [--name <名>] [--mode <模式>] [--model <providerId/modelId>] [--thought <档位>]` | 在 ZCode 新建对话执行任务；默认 mode=yolo（完全访问，子代理不卡权限确认）；stdout 一行 JSON（name/taskId） |
-| `zcode-sub send <name> "<消息>" [--steer\|--queue]` | 补充消息：默认 auto（运行中=GUI 默认排队/引导）；`--steer` = 请求**打断**当前生成（应答 `steered` 仅为受理，注入结果以事件流 `steer.injected` / `steer.fellBack` 为准）；空闲=接续对话 |
+| `zcode-sub send <name> "<消息>" [--steer\|--queue\|--interrupt]` | 补充消息：默认 auto（运行中=GUI 默认排队/引导）；`--steer` = ZCode 原生引导（当前步骤结束时注入，长文本生成时可能要等较久；应答仅为受理，结果以事件流 `steer.injected` / `steer.fellBack` 为准）；`--interrupt` = 截断当前生成（停止→等回空闲→作为新一轮发送，未完成内容丢弃）；空闲=接续对话 |
 | `zcode-sub wait <name> [--timeout 秒]` | 阻塞等新事件/子代理主动消息（超时 TIMEOUT，退出码 2） |
 | `zcode-sub result <name>` | 最后回复全文 + 状态；还在跑会明确说 |
 | `zcode-sub resume <name> "<继续文本>"` | 空闲任务接续对话（运行中补充用 send） |
@@ -58,7 +58,8 @@ exec /path/to/zcode-sub/bin/zcode-sub.js "$@"
 
 退出码：`1` 用法错误（含未知参数、未配置、本地无此任务、EACCES）；`2` 连不上本机任务 API 或 wait 超时（stdout `TIMEOUT`=超时再等一次；stderr `zcode_api_unreachable`=ZCode 没开）；`3` 工作区未在 ZCode 打开（含远端工作区，409）；`4` 按 taskId 的请求失败（含任务被删）或运行中 resume 被拒；`5` token/Host 校验失败；`7` 任务名非法或重名；`8` 未结束任务数达上限（默认 4，`ZCODE_SUB_MAX_RUNNING` 调整）。任务名仅 `[A-Za-z0-9._-]+`。完整错误码闭集与事件类型清单以 spec §3 为准（`docs/spec/2026-10-27-zcode-sub-bridge-eng-spec.md`）。
 
-- **按模型派发/换模型**：可用值先 `zcode-sub models` 查；`run --model <providerId/modelId> [--thought <档位>]` 派发时指定（`config.json` 可设 `defaultModel` 兜底，不传用 ZCode 默认），`zcode-sub model <name> …` 给已派发任务换（下一轮生效，运行中允许）。非法值本地预校验报 `zcode_model_invalid`（exit 1）并列出可选值。
+- **按模型派发/换模型**：可用值先 `zcode-sub models` 查（带与 run 相同的 `--cwd`）；`run --model <providerId/modelId> [--thought <档位>]` 派发时指定（`config.json` 可设 `defaultModel` 兜底，不传用 ZCode 默认），`zcode-sub model <name> …` 给已派发任务换（下一轮生效，运行中允许）。非法值本地预校验报 `zcode_model_invalid`（exit 1）并列出可选值。**未指定 --thought 时自动用默认档位**（用户拍板：max 优先；模型有 defaultThoughtLevel 且不支持 max 时用它；都没有取列表末档）——实际档位打印在 stderr。
+- **改向的两种手段**：`--steer` = ZCode 原生引导，在当前步骤结束时注入（长文本生成时可能要等较久；结果以事件流 steer.injected / steer.fellBack 为准，input.steered 事件受上游 3.16.2 已知问题影响可能不出现）；`--interrupt` = 立即截断（停止当前生成→等任务回空闲→消息作为新一轮发送），输出明示「未完成内容丢弃」，与 --steer/--queue 互斥，等待上限 `ZCODE_SUB_INTERRUPT_TIMEOUT_MS`（默认 15s，超限消息不发送、exit 4）。
 
 其他：未知参数按命令白名单报用法错误（exit 1，不静默忽略）；`--version` 打印版本号。诊断：`ZCODE_SUB_DEBUG=1` 时 API 请求/响应摘要追加 `~/.zcode-sub/debug.log`（不含 token 与 prompt 正文）。
 

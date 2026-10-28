@@ -145,10 +145,24 @@ export async function createTask(config, { workspacePath, prompt, title, mode, m
       ...(typeof payload.warning === "string" && payload.warning ? { warning: payload.warning } : {}),
     };
   }
+  if (status === 400 && payload?.error === "workspace_path_invalid") {
+    throw new ApiError(
+      "zcode_workspace_path_invalid",
+      "zcode_workspace_path_invalid: 工作区路径非法——须为有效的本地绝对路径。",
+      { exitCode: 1, status },
+    );
+  }
   if (status === 409 && payload?.error === "workspace_not_open") {
     throw new ApiError(
       "zcode_workspace_not_open",
       "zcode_workspace_not_open: 该工作区未在 ZCode 中打开。先在 ZCode 里打开该工作区再派发。",
+      { exitCode: 3, status: 409 },
+    );
+  }
+  if (status === 409 && payload?.error === "workspace_open_timeout") {
+    throw new ApiError(
+      "zcode_workspace_not_open",
+      "zcode_workspace_not_open: ZCode 打开该工作区超时——确认路径正确且 ZCode 可用后重试，或先在 ZCode 手动打开。",
       { exitCode: 3, status: 409 },
     );
   }
@@ -173,6 +187,13 @@ export async function listModels(config, workspacePath) {
     throw new ApiError(
       "zcode_workspace_not_open",
       "zcode_workspace_not_open: 该工作区未在 ZCode 中打开。先在 ZCode 里打开该工作区再试。",
+      { exitCode: 3, status: 409 },
+    );
+  }
+  if (status === 409 && payload?.error === "workspace_open_timeout") {
+    throw new ApiError(
+      "zcode_workspace_not_open",
+      "zcode_workspace_not_open: ZCode 打开该工作区超时——确认路径正确且 ZCode 可用后重试，或先在 ZCode 手动打开。",
       { exitCode: 3, status: 409 },
     );
   }

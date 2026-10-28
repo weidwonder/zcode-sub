@@ -148,6 +148,7 @@ test("listModels：200 返回 providers/preferred；workspacePath 进 query，�
     models: [
       { modelId: "glm-4.7", displayName: "glm-4.7", thoughtLevels: ["off", "medium", "high"], isDefault: true },
       { modelId: "glm-4.7-flash", displayName: "glm-4.7-flash", thoughtLevels: [], isDefault: false },
+      { modelId: "glm-5.3", displayName: "glm-5.3", thoughtLevels: ["off", "medium", "high", "max"], isDefault: false },
     ],
   });
 
