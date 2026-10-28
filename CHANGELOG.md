@@ -10,6 +10,7 @@
 
 ### 修复
 
+- `zcode-sub models` 不带 `--cwd` 时不再发出注定失败的请求：契约要求 `GET /api/models` 必带 workspacePath（真 ZCode 缺参回 400），此前 CLI 传 undefined 导致报错误导（`zcode_send_failed: …模型列表查询失败`）。现在 `--cwd` 缺失或非绝对路径在本地报用法错误（exit 1，`用法：zcode-sub models --cwd <工作区绝对路径> [--json]`）；usage 行与两份 README 命令表同步改为必填写法，假测试服务器按契约对缺参回 `400 bad_request`。
 - `test/cli.test.js` 两个「目录不可写」用例在 tmpdir 带继承 ACL 的环境（macOS `ls -le` 有 ACE）下 chmod 造不出不可写、因而误红：改为 chmod 后探测目录是否真不可写，仍可写时 `t.skip("…ACL 环境下无法模拟不可写")` 并清理临时目录（`TMPDIR=/private/tmp` 下行为不变）。
 
 ### 不兼容

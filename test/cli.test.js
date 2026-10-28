@@ -752,8 +752,16 @@ test("未指定 --thought 用默认档位：max 优先、defaultThoughtLevel 回
   settle("def-flash");
 });
 
+test("models：不带 --cwd → exit 1 用法错误（契约要求 workspacePath，缺参真 ZCode 回 400）", async () => {
+  const callsBefore = fake.calls.length;
+  const result = await runCli(["models"]);
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /用法：zcode-sub models --cwd <工作区绝对路径>/u);
+  assert.equal(fake.calls.length, callsBefore, "用法错误在请求之前拦下，不产生任何 API 调用");
+});
+
 test("models：文本表含表头/默认档位列/默认标记；--json 输出可解析", async () => {
-  const table = await runCli(["models"]);
+  const table = await runCli(["models", "--cwd", "/tmp/models-cli"]);
   assert.equal(table.status, 0, table.stderr);
   const header = table.stdout.split("\n")[0];
   assert.ok(header.startsWith("providerId\tmodelId\t"), `表头应为 providerId/modelId 开头：${header}`);
@@ -777,7 +785,7 @@ test("models：文本表含表头/默认档位列/默认标记；--json 输出�
   assert.equal(glm47Cols[4], "*", "preferred 仍按默认列标 *");
   assert.ok(table.stdout.includes("glm-4.7"), `应含 glm-4.7：${table.stdout}`);
 
-  const json = await runCli(["models", "--json"]);
+  const json = await runCli(["models", "--cwd", "/tmp/models-cli", "--json"]);
   assert.equal(json.status, 0, json.stderr);
   const payload = JSON.parse(json.stdout);
   assert.equal(payload.providers[0].providerId, "glm");

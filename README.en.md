@@ -105,7 +105,7 @@ ln -s "$(pwd)/skill/zcode-sub" ~/.claude/skills/zcode-sub    # or copy the whole
 | `zcode-sub resume <name> "<more text>"` | Continue an idle task's conversation (use send while running) |
 | `zcode-sub stop <name>` | Stop generation |
 | `zcode-sub list [--json]` | Local task table (name/taskId/status) |
-| `zcode-sub models [--cwd <abs path>] [--json]` | List available models (providerId/modelId/thought levels/default level/default flag) |
+| `zcode-sub models --cwd <abs path> [--json]` | List available models (providerId/modelId/thought levels/default level/default flag) |
 | `zcode-sub model <name> <providerId/modelId> [--thought <level>]` | Switch model for a dispatched task (takes effect next turn) |
 | `zcode-sub mcp` | stdio MCP server (`reply_to_parent`), spawned by ZCode |
 

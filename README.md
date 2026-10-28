@@ -104,7 +104,7 @@ ln -s "$(pwd)/skill/zcode-sub" ~/.claude/skills/zcode-sub    # 或把整个目�
 | `zcode-sub resume <name> "<继续文本>"` | 空闲任务接续对话（运行中补充用 send） |
 | `zcode-sub stop <name>` | 停止生成 |
 | `zcode-sub list [--json]` | 本地任务表（name/taskId/状态） |
-| `zcode-sub models [--cwd <绝对路径>] [--json]` | 列可用模型（providerId/modelId/思考档位/默认档位/默认标记） |
+| `zcode-sub models --cwd <绝对路径> [--json]` | 列可用模型（providerId/modelId/思考档位/默认档位/默认标记） |
 | `zcode-sub model <name> <providerId/modelId> [--thought <档位>]` | 给已派发任务换模型（下一轮生效） |
 | `zcode-sub mcp` | stdio MCP server（`reply_to_parent`），由 ZCode 拉起 |
 

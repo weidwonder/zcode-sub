@@ -41,7 +41,7 @@ const USAGE = `zcode-sub 用法（把 ZCode 桌面版当子代理）：
       在原 ZCode 对话续聊（要求任务空闲；运行中补充用 send）。
   zcode-sub stop <name>
       停止任务生成。
-  zcode-sub models [--cwd <绝对路径>] [--json]
+  zcode-sub models --cwd <绝对路径> [--json]
       列可用模型（providerId/modelId/思考档位/默认档位/默认标记）；--model 与 --thought 的合法值以此为准。
   zcode-sub model <name> <providerId/modelId> [--thought <档位>]
       给已派发任务换模型（下一轮生效；可用值先 models 查）。
@@ -738,8 +738,14 @@ async function cmdStop(home, flags) {
 // 模型目录（偏离#18）：--json 出原始 payload；文本表每个模型一行，默认档位列显示
 // defaultThoughtLevel（无则 -），默认列按 preferred 命中标 *。
 async function cmdModels(home, flags) {
+  // 契约要求 GET /api/models 必带 workspacePath（真 ZCode 缺参回 400），--cwd 缺失或
+  // 非绝对路径在本地拦为用法错误，不发出注定失败的请求
+  const cwd = flags.cwd;
+  if (typeof cwd !== "string" || !cwd.startsWith("/")) {
+    throw usageError("用法：zcode-sub models --cwd <工作区绝对路径> [--json]");
+  }
   const config = requireConfig(home);
-  const payload = await api.listModels(config, typeof flags.cwd === "string" ? flags.cwd : undefined);
+  const payload = await api.listModels(config, cwd);
   if (flags.json) {
     process.stdout.write(`${JSON.stringify(payload, null, 2)}\n`);
     return;

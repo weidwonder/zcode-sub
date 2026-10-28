@@ -179,8 +179,9 @@ test("listModels：200 返回 providers/preferred；workspacePath 进 query，�
     "workspacePath 应进 query",
   );
 
-  // 不带 workspacePath：URL 无 query
-  await listModels(config);
+  // 不带 workspacePath：api 层不发 query（URL 无 ?）；假服务器按契约回 400 bad_request
+  //（CLI 层因此要求 models 必带 --cwd）
+  await assert.rejects(() => listModels(config), (error) => error.code === "zcode_send_failed" && error.status === 400);
   assert.equal(fake.calls.at(-1).url, "/api/models");
   assert.equal(fake.calls.length - mark, 2, "共两次调用");
 });
