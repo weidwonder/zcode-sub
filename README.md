@@ -248,6 +248,8 @@ scripts/smoke-real-zcode.sh    # 真机冒烟（需 ZCode 已装补丁并完成�
 
 见 [CONTRIBUTING.md](CONTRIBUTING.md)（报 issue、跑测试、提交规范）；参与即同意遵守 [行为准则](CODE_OF_CONDUCT.md)。
 
+友链：[LINUX DO](https://linux.do) —— 感谢佬友们的交流与反馈。
+
 ## 许可证
 
 [Apache-2.0](LICENSE)。`patch/` 工具链构建的上游 ZCode 本身也是 Apache-2.0（[zai-org/ZCode](https://github.com/zai-org/ZCode)）；补丁以提交清单（`patch/series`）引用，不复制上游代码。
