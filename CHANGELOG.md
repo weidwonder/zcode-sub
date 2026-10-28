@@ -4,6 +4,14 @@
 
 ## 未发布
 
+### 新增
+
+- 开源发布文件：Apache-2.0 `LICENSE`（标准全文）；`package.json` 补 `license` 与 `repository` 字段；README 重写为开源版（首屏定位、前置条件与补丁版构建路径、快速上手 setup→run→wait→result、命令/退出码/环境变量配置表、安全边界；保留 `## 需求`、`## 架构与边界` 两个锚点标题）并新增英文版 `README.en.md`，两份互链；新增 `CONTRIBUTING.md`（issue、npm test、提交规范）。
+
+### 修复
+
+- `test/cli.test.js` 两个「目录不可写」用例在 tmpdir 带继承 ACL 的环境（macOS `ls -le` 有 ACE）下 chmod 造不出不可写、因而误红：改为 chmod 后探测目录是否真不可写，仍可写时 `t.skip("…ACL 环境下无法模拟不可写")` 并清理临时目录（`TMPDIR=/private/tmp` 下行为不变）。
+
 ### 不兼容
 
 - 传输层整体切换：`zcode-sub` 从 ZCode Webhook Bot 入站（契约 v1）改为 ZCode 本机任务 API（契约 v2）。旧调用方式：配置 botId/secret、GUI 建 Webhook bot、bind code 绑定、`setup --bot-id/--bind-code/--secret/--daemon-port/--ingress-port`；新调用方式：`zcode-sub setup`（写 `~/.zcode/v2/local-task-api.json`，token 自动生成），`run` 直接建 ZCode 普通对话（多任务并行），`send` 运行中可补充消息（auto/steer/queue）。迁移：删除旧 `~/.zcode-sub` 重跑 setup。原因：用户要求多对话并行与运行中补消息，v1 单 bot 单会话且无 steer（spec §14 决策 D-v2-01）。
