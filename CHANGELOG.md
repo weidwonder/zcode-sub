@@ -16,7 +16,7 @@
 
 ### 变更
 
-（无）
+- `patch/series` 固化 ZCode 补丁的三个净提交（与上游 PR 同一组）并加契约测试校验行，`sync-upstream.sh` 从此会实际 cherry-pick 补丁。
 
 ### 修复
 
