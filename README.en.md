@@ -250,6 +250,8 @@ Docs: spec `docs/spec/2026-10-27-zcode-sub-bridge-eng-spec.md` (includes the v1â
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) (filing issues, running tests, commit conventions); by participating you agree to follow the [Code of Conduct](CODE_OF_CONDUCT.md).
 
+Friends: [LINUX DO](https://linux.do) â€” thanks to the community for discussion and feedback.
+
 ## License
 
 [Apache-2.0](LICENSE). The upstream ZCode built by the `patch/` toolchain is itself Apache-2.0 ([zai-org/ZCode](https://github.com/zai-org/ZCode)); patches are referenced as a commit list (`patch/series`), not as copied code.

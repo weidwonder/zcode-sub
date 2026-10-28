@@ -29,6 +29,7 @@
 
 ### 变更
 
+- README 中英两份「贡献」节末尾加 LINUX DO 社区友链。
 - README 首屏放入实拍截图（`docs/assets/screenshot.png`）：左为 Claude Code 派发后 wait，右为 ZCode 里运行中的同名对话，替换此前的截图占位注释。
 - README（中英两份）重写：首屏改为副标题 +「为什么用它」（首条为把重活交给 ZCode 绑定的模型、分担 Claude 用量）+ 白话版工作原理，内部术语首次出现给解释；安装改为完整路径（clone fork 分支 `weidwonder/ZCode@feat/local-task-api` → 备份 → 构建 → 安装 ZCode Preview → `zcode-sub setup` 看到「✓ 本机任务 API 正常」），删去「计划提交上游」，改为如实说明补丁维护在 fork 分支；新增「运行中改向」（`--steer` / `--interrupt` 最小示例与对应事件）、退出码表（码/含义/怎么办）、「限制」、「问题与建议」小节；`## 需求`、`## 架构与边界` 两个锚点标题保留。
 - 并发派发上限：同时非终态任务数默认 4（`ZCODE_SUB_MAX_RUNNING` 调整，尽力检查——多进程同时派发瞬间可能超出），超限 `zcode_too_many_running`（退出码 8）；并发额度刷新遇 404（任务已在 GUI 删除）时本地置 `error` 终态自动释放额度。
