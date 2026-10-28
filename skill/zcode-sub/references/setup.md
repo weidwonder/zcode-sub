@@ -6,7 +6,7 @@
 
 要求 Node ≥ 22。优先「绝对路径 + shim」（`npm link` 会写全局 bin 目录，次选）。四步：
 
-1. 向用户确认 zcode-sub 仓库路径（本工具不发布 npm，本地路径或 URL）；
+1. 向用户确认 zcode-sub 仓库路径（本工具不发布 npm，本地路径或 URL；本机没有仓库时从 https://github.com/weidwonder/zcode-sub clone 到用户指定的目录）；
 2. `node --version` 确认 ≥ 22；
 3. 按 §5 模板建 shim——统一用 setup 报错输出的模板或 §5 模板，不要自己另写一份（家目录未被重定向时可省略两行 export）；
 4. `command -v zcode-sub && zcode-sub --version` 验证。
@@ -37,7 +37,7 @@ ZCode 桌面版需已装「本机任务 API」补丁：setup 健康检查报 `zc
 - 片段中 `command` 用 setup 打印的**绝对路径**（GUI 拉起的进程不一定能在 PATH 找到 node），原样复制，不要手打成 `"node"`。
 - 片段 `env.ZCODE_SUB_HOME` 必须与你跑 zcode-sub 命令时的值一致——不一致时子代理调 reply_to_parent 报「任务不在登记表」，父侧只看到永远收不到 `[reply]`。
 
-## 5. HOME 被重定向的环境（座位/容器常见）
+## 5. HOME 被重定向的环境（沙箱、多账号容器常见）
 
 症状任一：`EACCES … /var/empty/...`；`list` 为空但 ZCode GUI 里明明有任务；setup 报「✗ 状态目录不可写且未设置 ZCODE_SUB_HOME」。
 
@@ -57,4 +57,4 @@ export ZCODE_DATA_BASE_DIR=/Users/<你的用户名>
 exec <仓库路径>/bin/zcode-sub.js "$@"
 ```
 
-工作区要求：`--cwd` 须为本机存在的目录绝对路径——未打开时 ZCode 会自动在当前窗口加该目录的标签页（无确认弹窗，最长等 30 秒）；远端路径或自动打开失败 → exit 3（详见 troubleshooting 码表）。
+工作区要求（`--cwd` 的合法形态、自动打开副作用与 exit 3 口径）见 SKILL.md 开头的定位与前提。

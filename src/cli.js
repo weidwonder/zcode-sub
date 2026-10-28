@@ -25,7 +25,7 @@ const USAGE = `zcode-sub 用法（把 ZCode 桌面版当子代理）：
   zcode-sub run "<任务>" --cwd <绝对路径> [--name <名>] [--mode <模式>] [--model <providerId/modelId>] [--thought <档位>]
       在 ZCode 该工作区新建对话执行任务（多任务可并行）；stdout 一行 JSON。默认 yolo（完全访问）。
       --mode 枚举：default/yolo/guarded/plan/edit/acceptEdits/auto/dontAsk/bypassPermissions/autoEdit/build。
-      --model/--thought 按模型选择派发（可用值先 zcode-sub models 查；不传用 ZCode 默认或 config 的 defaultModel）。
+      --model/--thought 按模型选择派发（可用值先 zcode-sub models --cwd <工作区绝对路径> 查；不传用 ZCode 默认或 config 的 defaultModel）。
   zcode-sub send <name> "<消息>" [--steer|--queue|--interrupt]
       补充消息：默认 auto（运行中的去向由会话设置决定，GUI 默认排队）；
       --steer 请求原生引导（当前步骤结束时注入，长文本生成时可能等较久；应答仅为受理，
@@ -41,10 +41,10 @@ const USAGE = `zcode-sub 用法（把 ZCode 桌面版当子代理）：
       在原 ZCode 对话续聊（要求任务空闲；运行中补充用 send）。
   zcode-sub stop <name>
       停止任务生成。
-  zcode-sub models [--cwd <绝对路径>] [--json]
+  zcode-sub models --cwd <绝对路径> [--json]
       列可用模型（providerId/modelId/思考档位/默认档位/默认标记）；--model 与 --thought 的合法值以此为准。
   zcode-sub model <name> <providerId/modelId> [--thought <档位>]
-      给已派发任务换模型（下一轮生效；可用值先 models 查）。
+      给已派发任务换模型（下一轮生效；可用值先 models --cwd <工作区绝对路径> 查）。
   zcode-sub list [--json]
   zcode-sub mcp
       stdio MCP server（reply_to_parent 工具，配进 ZCode 的 mcp.servers）。
@@ -431,7 +431,7 @@ function resolveModelSelection(flags, config) {
   if (flags.model !== undefined) {
     const parts = typeof flags.model === "string" ? flags.model.split("/") : [];
     if (parts.length !== 2 || !parts[0] || !parts[1]) {
-      throw usageError("--model 格式应为 <providerId>/<modelId>，例如 glm/glm-4.7；可用列表 zcode-sub models");
+      throw usageError("--model 格式应为 <providerId>/<modelId>，例如 glm/glm-4.7；可用列表 zcode-sub models --cwd <工作区绝对路径>");
     }
     modelFlag = { providerId: parts[0], modelId: parts[1] };
   }
@@ -738,8 +738,14 @@ async function cmdStop(home, flags) {
 // 模型目录（偏离#18）：--json 出原始 payload；文本表每个模型一行，默认档位列显示
 // defaultThoughtLevel（无则 -），默认列按 preferred 命中标 *。
 async function cmdModels(home, flags) {
+  // 契约要求 GET /api/models 必带 workspacePath（真 ZCode 缺参回 400），--cwd 缺失或
+  // 非绝对路径在本地拦为用法错误，不发出注定失败的请求
+  const cwd = flags.cwd;
+  if (typeof cwd !== "string" || !cwd.startsWith("/")) {
+    throw usageError("用法：zcode-sub models --cwd <工作区绝对路径> [--json]");
+  }
   const config = requireConfig(home);
-  const payload = await api.listModels(config, typeof flags.cwd === "string" ? flags.cwd : undefined);
+  const payload = await api.listModels(config, cwd);
   if (flags.json) {
     process.stdout.write(`${JSON.stringify(payload, null, 2)}\n`);
     return;
@@ -779,7 +785,7 @@ async function cmdModel(home, flags) {
   const base = resolveModelSelection({ model: modelRef, thought: flags.thought }, config);
   // flags._[1] 无斜杠会在 resolveModelSelection 报格式错，base 实际必非 null；兜底防御。
   if (base === null) {
-    throw usageError("--model 格式应为 <providerId>/<modelId>，例如 glm/glm-4.7；可用列表 zcode-sub models");
+    throw usageError("--model 格式应为 <providerId>/<modelId>，例如 glm/glm-4.7；可用列表 zcode-sub models --cwd <工作区绝对路径>");
   }
   // 预校验返回补全默认档位后的 selection（未指定 --thought 且模型有档位时），进 setModel body
   const selection = await validateModelSelection(config, task.workspacePath, base);

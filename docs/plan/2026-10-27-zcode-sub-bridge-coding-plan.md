@@ -141,3 +141,8 @@ test/helpers/fake-zcode.js  startFakeZcode({script}) -> {port, ingressUrl, calls
 | 4 | `src/mcp.js` 直写信箱 + `test/mcp.test.js`（5 用例）+ 冒烟脚本 v2 | 一次通过（含报备的一个真 bug 自修：handleRequest 需保持 async） | a7271fb |
 
 无「同处返工两次不过」的 haiku 产出，无需本会话接管改写。文档（spec/README/Skill/CHANGELOG/覆盖度/依赖声明/事实卡）由本会话直接更新。
+
+## 附：开源准备执行记录（2026-10-28）
+
+- FR-024 口径变更：`zcode-sub models` 的 `--cwd` 改为必带（缺失或非绝对路径本地报用法错误 exit 1），`listModels` 的 workspacePath 改为必传；假服务器按契约对缺参回 400。提交 c3c240a、2f0c351、a509e79。
+- 开源发布文件（LICENSE、README 中英、CONTRIBUTING）与 patch/ 脚本默认路径可配置（patch-tooling spec §8.1）不对应本 plan 的 FR，按用户开源计划执行。

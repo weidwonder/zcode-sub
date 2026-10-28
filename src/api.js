@@ -185,7 +185,7 @@ export async function createTask(config, { workspacePath, prompt, title, mode, m
   if (status === 400 && payload?.error === "invalid_model_selection") {
     throw new ApiError(
       "zcode_model_invalid",
-      `zcode_model_invalid: 上游拒绝了模型选择（${typeof payload.message === "string" && payload.message ? payload.message : "invalid_model_selection"}）——用 zcode-sub models 查看可选值。`,
+      `zcode_model_invalid: 上游拒绝了模型选择（${typeof payload.message === "string" && payload.message ? payload.message : "invalid_model_selection"}）——用 zcode-sub models --cwd <工作区绝对路径> 查看可选值。`,
       { exitCode: 1, status },
     );
   }
@@ -196,16 +196,18 @@ export async function createTask(config, { workspacePath, prompt, title, mode, m
   );
 }
 
-// 模型目录（偏离#18）：GET /api/models，workspacePath 为非空字符串时带 query 供按工作区路由。
+// 模型目录（偏离#18）：GET /api/models，workspacePath 必传并进 query 供按工作区路由
+//（契约要求必带，缺参被上游 400 拒绝；CLI 的 cmdModels 已先把缺失/非绝对路径拦为用法错误）。
 // 2xx 返回 payload（{providers, preferred?}，preferred 形体即 modelSelection 可原样回传）；
 // 错误走统一约定：401/403→zcode_unauthorized(5)（apiFetch 内抛）、工作区族错误由
 // workspaceApiError 统一分流（409 → zcode_workspace_not_open(3)、400 path_invalid →
 // zcode_workspace_path_invalid(1)，与 createTask 等全部端点同口径），
 // 其余 ≥400 → zcode_send_failed(4)，网络失败→zcode_api_unreachable(2)（apiFetch 内抛）。
 export async function listModels(config, workspacePath) {
-  const wsQuery =
-    typeof workspacePath === "string" && workspacePath ? `?workspacePath=${encodeURIComponent(workspacePath)}` : "";
-  const { status, payload } = await apiFetch(config, `/api/models${wsQuery}`);
+  if (typeof workspacePath !== "string" || !workspacePath) {
+    throw new Error("listModels：workspacePath 必传（GET /api/models 契约要求必带，缺参上游回 400）——调用方应先完成 --cwd 校验");
+  }
+  const { status, payload } = await apiFetch(config, `/api/models?workspacePath=${encodeURIComponent(workspacePath)}`);
   if (status >= 200 && status < 300) return payload;
   const wsError = workspaceApiError(status, payload);
   if (wsError) throw wsError;
@@ -237,7 +239,7 @@ export async function setModel(config, taskId, modelSelection, workspacePath, cl
   if (status === 400 && payload?.error === "invalid_model_selection") {
     throw new ApiError(
       "zcode_model_invalid",
-      `zcode_model_invalid: 上游拒绝了模型选择（${typeof payload.message === "string" && payload.message ? payload.message : "invalid_model_selection"}）——用 zcode-sub models 查看可选值。`,
+      `zcode_model_invalid: 上游拒绝了模型选择（${typeof payload.message === "string" && payload.message ? payload.message : "invalid_model_selection"}）——用 zcode-sub models --cwd <工作区绝对路径> 查看可选值。`,
       { exitCode: 1, status },
     );
   }

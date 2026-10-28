@@ -5,7 +5,7 @@
 set -euo pipefail
 
 DRY_RUN=0; ASSUME_YES=0; LIST=0; FROM=""
-REAL_HOME="/Users/weidwonder"
+REAL_HOME="${ZCODE_REAL_HOME:-$HOME}"   # HOME 被重定向的环境（沙箱/多账号容器）用 ZCODE_REAL_HOME 指向真实家目录
 BACKUP_ROOT="${ZCODE_BACKUP_ROOT:-$REAL_HOME/projects/zcode-backups}"
 APPS_DIR="$BACKUP_ROOT/apps"
 
@@ -37,7 +37,7 @@ if [[ $LIST -eq 1 ]]; then
   [[ ${#snapshots[@]:-0} -eq 0 ]] && log "  （无）"
   exit 0
 fi
-[[ ${#snapshots[@]} -gt 0 ]] || die "备份区没有快照：${APPS_DIR}（先确认 ZCODE_BACKUP_ROOT）"
+[[ ${#snapshots[@]} -gt 0 ]] || die "备份区没有快照：${APPS_DIR}（先确认 ZCODE_BACKUP_ROOT；HOME 被重定向的环境请设 ZCODE_REAL_HOME=<真实家目录>）"
 
 # ---- 选快照、推目标路径 ----
 SNAP="$FROM"; [[ -z "$SNAP" ]] && SNAP="${snapshots[0]}"

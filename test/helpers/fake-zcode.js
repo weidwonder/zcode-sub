@@ -299,9 +299,14 @@ export async function startFakeZcode({ token = "test-token", port: listenPort = 
         return;
       }
 
-      // 偏离#18：模型目录；鉴权已过（记入 calls）。仍按 workspace 语义路由：未打开的
-      // 工作区 409 workspace_not_open（与其它端点 409 语义一致）
+      // 偏离#18：模型目录；鉴权已过（记入 calls）。契约要求必带 workspacePath，缺参
+      // 400 bad_request（真 ZCode 同款）；仍按 workspace 语义路由：未打开的工作区
+      // 409 workspace_not_open（与其它端点 409 语义一致）
       if (method === "GET" && pathname === "/api/models") {
+        if (requestedWs === undefined || requestedWs === "") {
+          json(response, 400, { error: "bad_request" });
+          return;
+        }
         if (requestedWs === "/workspace-closed") {
           json(response, 409, { error: "workspace_not_open" });
           return;

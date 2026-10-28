@@ -4,6 +4,11 @@
   "description": "经 ZCode 本机任务 API 把 ZCode 桌面版当 Claude Code 子代理的桥接 CLI：多对话并行、运行中补消息、事件与最终回复",
   "type": "module",
   "private": true,
+  "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/weidwonder/zcode-sub"
+  },
   "bin": {
     "zcode-sub": "bin/zcode-sub.js"
   },

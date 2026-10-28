@@ -11,7 +11,7 @@ DRY_RUN=0
 PATCH_DIR="$(cd "$(dirname "$0")" && pwd)"
 SERIES_FILE="$PATCH_DIR/series"
 NODE_VERSION="24.14.0"
-TOOLCHAIN_ROOT="/Users/weidwonder/projects/.toolchains"
+TOOLCHAIN_ROOT="${ZCODE_TOOLCHAIN_ROOT:-${ZCODE_REAL_HOME:-$HOME}/.cache/zcode-sub/toolchains}"
 BRANCH_PREFIX="local/patched"
 
 log() { printf '[patch] %s\n' "$*"; }
