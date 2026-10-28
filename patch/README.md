@@ -29,10 +29,7 @@
 
 ## 流程一：首次替换（推荐 Preview 并存）
 
-先准备带补丁的 ZCode 源码（`build-desktop.sh` 只构建传入的目录，不会自己打补丁），二选一：
-
-- **直接用 fork 分支**：`git clone -b feat/local-task-api https://github.com/weidwonder/ZCode <ZCode 源码目录>`——上游 3.16.2（`3c5b2276`）加 `patch/series` 的三个补丁提交。
-- **在上游源码上打补丁**：`git clone https://github.com/zai-org/ZCode <ZCode 源码目录>`，再 `git -C <ZCode 源码目录> fetch https://github.com/weidwonder/ZCode feat/local-task-api` 取到补丁提交，然后跑流程二第 1 步的 `patch/sync-upstream.sh <ZCode 源码目录>`（它要求 `origin` 指向上游）。
+先准备带补丁的 ZCode 源码（`build-desktop.sh` 只构建传入的目录，不会自己打补丁）：`git clone -b feat/local-task-api https://github.com/weidwonder/ZCode <ZCode 源码目录>`——上游 3.16.2（`3c5b2276`）加 `patch/series` 的三个补丁提交。上游发新版后怎么跟上见流程二。
 
 ```bash
 cd <zcode-sub 仓库目录>
@@ -62,6 +59,8 @@ patch/install-desktop.sh <ZCode 源码目录>/packages/desktop/dist/mac-arm64/ZC
 替换后正式版旧包在 `zcode-backups/apps/ZCode-3.16.3-<时间戳>.app`，回退用 `patch/rollback-desktop.sh --list` 挑一份恢复。**选这个方案前读报告 §3/§6**：强更门敞口（服务端一旦下发 minimalVersion>3.16.2 补丁版启动即被拦）、签名丢失（CUA 的辅助功能/录屏要重新授权）。
 
 ## 流程二：上游更新（上游 sync 了新版本）
+
+前提：`sync-upstream.sh` 把 `origin/main` 当上游。源码目录若按流程一从 fork clone，先把 `origin` 指回上游：`git -C <ZCode 源码目录> remote set-url origin https://github.com/zai-org/ZCode`（补丁提交已在本地，`patch/series` 里的 SHA 照常可取）。
 
 ```bash
 # 1. 同步：fetch → local/patched-<上游SHA> 分支 → cherry-pick 补丁 → typecheck/lint

@@ -37,7 +37,7 @@ ZCode spawns zcode-sub mcp ──reply_to_parent──▶ mailbox file (read by 
 
 ## Install
 
-**Where the patch lives**: the "local task API" is a ZCode patch maintained by this repository. Its three commits live on the fork branch [weidwonder/ZCode@feat/local-task-api](https://github.com/weidwonder/ZCode/tree/feat/local-task-api) (based on upstream [zai-org/ZCode](https://github.com/zai-org/ZCode) 3.16.2; the commit list is pinned in [`patch/series`](patch/series)). Upstream does not accept external PRs; if upstream ever ships an equivalent feature, use the official build and skip self-building.
+**Where the patch lives**: the "local task API" is a ZCode patch maintained by this repository. Its three commits live on the fork branch [weidwonder/ZCode@feat/local-task-api](https://github.com/weidwonder/ZCode/tree/feat/local-task-api) (based on upstream [zai-org/ZCode](https://github.com/zai-org/ZCode) 3.16.2; the commit list is pinned in [`patch/series`](patch/series)). Upstream does not accept external PRs; if upstream ever ships a feature compatible with local task API contract v2 (`zcode-sub setup` health check passes), use the official build and skip self-building.
 
 ### 1. Get the code, install the CLI
 
@@ -166,7 +166,7 @@ zcode-sub send refactor "Stop — only touch api.js, leave the tests alone" --in
 | Code | Meaning | What to do |
 |---|---|---|
 | `0` | success | — |
-| `1` | usage error: unknown args, not configured, no such local task, EACCES, invalid workspace path, rejected model selection | fix per the reason in the error; list valid models with `zcode-sub models --cwd <abs path>`; if not configured, run `zcode-sub setup` first |
+| `1` | usage error: unknown args, not configured, no such local task, EACCES, invalid workspace path, rejected model selection; task creation rejected by ZCode (`zcode_create_failed`) | fix per the reason in the error (for `zcode_create_failed`, check the status and body in the error); list valid models with `zcode-sub models --cwd <abs path>`; if not configured, run `zcode-sub setup` first |
 | `2` | cannot reach the local task API, or `wait` timed out (prints TIMEOUT) | after a wait timeout just wait again; if unreachable, make sure ZCode is open and check `zcode-sub setup`'s health check |
 | `3` | workspace problem: not open, remote workspace, auto-open timed out, ZCode refuses to open | retry directly after a timeout; when refused (e.g. a forced update is pending) deal with the ZCode window first; otherwise open the directory in ZCode manually |
 | `4` | a task-by-id request failed (including the task being deleted in the GUI), `resume` rejected while running, or the `--interrupt` wait timed out | check the status with `zcode-sub result <name>`; use `send` for mid-run follow-ups |

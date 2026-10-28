@@ -37,7 +37,7 @@ ZCode 拉起 zcode-sub mcp ──reply_to_parent──▶ 信箱文件（wait �
 
 ## 安装
 
-**补丁从哪来**：「本机任务 API」是本仓维护的 ZCode 补丁，三个提交维护在 fork 分支 [weidwonder/ZCode@feat/local-task-api](https://github.com/weidwonder/ZCode/tree/feat/local-task-api)（基于上游 [zai-org/ZCode](https://github.com/zai-org/ZCode) 3.16.2，提交清单固化在 [`patch/series`](patch/series)）。上游不接受外部 PR；如果上游将来合入同类功能，直接用官方版即可，不必自行构建。
+**补丁从哪来**：「本机任务 API」是本仓维护的 ZCode 补丁，三个提交维护在 fork 分支 [weidwonder/ZCode@feat/local-task-api](https://github.com/weidwonder/ZCode/tree/feat/local-task-api)（基于上游 [zai-org/ZCode](https://github.com/zai-org/ZCode) 3.16.2，提交清单固化在 [`patch/series`](patch/series)）。上游不接受外部 PR；如果上游将来提供兼容本机任务 API 契约 v2 的功能（`zcode-sub setup` 健康检查通过），直接用官方版即可，不必自行构建。
 
 ### 1. 取代码，装 CLI
 
@@ -164,7 +164,7 @@ zcode-sub send refactor "停，先只改 api.js，别动测试" --interrupt
 | 码 | 含义 | 怎么办 |
 |---|---|---|
 | `0` | 成功 | — |
-| `1` | 用法错误：未知参数、未配置、本地无此任务、EACCES、工作区路径非法、模型选择被拒绝 | 按报错里的原因改；模型可选值用 `zcode-sub models --cwd <绝对路径>` 查；未配置先跑 `zcode-sub setup` |
+| `1` | 用法错误：未知参数、未配置、本地无此任务、EACCES、工作区路径非法、模型选择被拒绝；建任务被 ZCode 拒绝（`zcode_create_failed`） | 按报错里的原因改（`zcode_create_failed` 看报错里的 status 与正文）；模型可选值用 `zcode-sub models --cwd <绝对路径>` 查；未配置先跑 `zcode-sub setup` |
 | `2` | 连不上本机任务 API，或 `wait` 超时（输出 TIMEOUT） | wait 超时再等一次即可；连不上就确认 ZCode 已打开、跑 `zcode-sub setup` 看健康检查 |
 | `3` | 工作区问题：未打开、远端工作区、自动打开超时、ZCode 禁止打开 | 超时可直接重试；被禁止（如强制升级中）先处理 ZCode 窗口；其余请在 ZCode 手动打开该目录 |
 | `4` | 按 taskId 的请求失败（含任务已在 GUI 删除）、运行中 `resume` 被拒、`--interrupt` 等待超时 | 用 `zcode-sub result <name>` 看状态；运行中补充改用 `send` |

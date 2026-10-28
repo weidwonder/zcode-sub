@@ -9,6 +9,7 @@ authority_refs:
   - 'patch/verify-migration-checksums.mjs 的 CLI 与退出码约定（0=全匹配含 SKIP-DYN；1=DIFF/EXTRA/取数错误）'
   - 'patch/backup-zcode-data.sh 的备份范围与 manifest 格式（zcode-backups/<ts>/manifest.json）'
   - 'patch/series 序列文件格式（SHA 行 / # 注释 / ! 自定义校验行）与 local/patched-<短SHA> 分支命名约定'
+  - '补丁提交来源（fork 分支 weidwonder/ZCode@feat/local-task-api）与首次替换的源码准备（展开的家在 patch/README.md 流程一）'
   - 'docs/report/zcode-patched-build-compat.md 的降级兼容性结论（安全，附证据）'
 ---
 
@@ -22,7 +23,7 @@ authority_refs:
 
 - **一句话目的**：让用户能用开源 ZCode 源码（3.16.2）+ 本地补丁构建桌面版，安全地替换/并存于正式版（3.16.3），登录态与任务历史不丢，且上游每次发版都能低成本跟上。
 - **端到端场景**：
-  1. 用户首次替换：`patch/backup-zcode-data.sh`（保全数据）→ `patch/build-desktop.sh <ZCode 源码目录>`（构建补丁版）→ `patch/install-desktop.sh <产物>`（替换/并存）→ 打开 ZCode 验证登录态与历史任务。
+  1. 用户首次替换（源码目录须已含 `patch/series` 的补丁提交，取法见 `patch/README.md` 流程一）：`patch/backup-zcode-data.sh`（保全数据）→ `patch/build-desktop.sh <ZCode 源码目录>`（构建补丁版）→ `patch/install-desktop.sh <产物>`（替换/并存）→ 打开 ZCode 验证登录态与历史任务。
   2. 上游发新版（如 3.16.4）：`patch/sync-upstream.sh <ZCode 源码目录>`（fetch → 重建补丁分支 → cherry-pick 补丁提交 → 冲突即停并打印文件清单 → typecheck/lint）→ 通过后重跑 build/install。
   3. 补丁版有问题要回退：`patch/rollback-desktop.sh`（从 `zcode-backups/apps/` 恢复上一份正式版 .app）；数据层回滚按 `patch/README.md` 的手动步骤用备份目录恢复。
   4. 构建期身份选错（连了测试后端）：`build-desktop.sh` 无条件以 `ZCODE_ENV=production` 组装构建环境（外部漏设不可能进入构建进程），后端环境不存在错配路径，杜绝测试后端包冒充正式包。
@@ -62,7 +63,7 @@ authority_refs:
   - 不改全局 Node/pnpm（Node 24.14.0 以解压目录方式放工具链根目录——`ZCODE_TOOLCHAIN_ROOT`，默认值见 patch/README.md「环境变量」）。
 - 依赖的上游 / 被依赖的下游：
   - 上游 ZCode 源码（github.com/zai-org/ZCode，本地 `/Users/weidwonder/projects/ZCode` 只读），版本要求 Node 24.14.0 + pnpm 10.33.2（`mise.toml:3-4`），打包入口 `pnpm bundle:desktop`（`package.json:55`），身份解析 `packages/desktop/scripts/desktop-product-identity.mjs:59-68`，mac 签名默认关（`packages/desktop/electron-builder.config.js:833` identity null）。依赖声明见 `engineering-context/dependencies/ZCode.md`。
-  - 上游 `feat/local-bot-webhook` 分支（`/Users/weidwonder/projects/ZCode/.worktrees/local-bot-webhook`）：`sync-upstream.sh` 的补丁提交来源；`chore(local-dw):` 前缀提交是本地专用，MUST 排除。
+  - 补丁净提交：`patch/series` 列出的提交，取自 ZCode fork `weidwonder/ZCode` 的 `feat/local-task-api` 分支（分支状态以 `engineering-context/dependencies/ZCode.md` 的上游快照行为准）；开发分支 `feat/local-bot-webhook` 含 v1 引入与 revert 对冲对、`chore(local-dw):` 提交，MUST NOT 直接取。
   - 下游：本工具链产出的 `.app` 交给用户在真机安装；本座位不执行安装。
 - **既有系统清单**：
 
