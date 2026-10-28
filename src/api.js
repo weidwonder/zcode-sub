@@ -23,7 +23,7 @@ function workspaceApiError(status, payload) {
   if (status === 409 && payload?.error === "workspace_not_open") {
     return new ApiError(
       "zcode_workspace_not_open",
-      "zcode_workspace_not_open: 该工作区未在 ZCode 中打开。先在 ZCode 里打开该工作区再派发。",
+      "zcode_workspace_not_open: 该工作区未在 ZCode 中打开（ZCode 会尝试自动打开，本次未成功——可能超时或被禁止）。可重试，或先请用户在 ZCode 手动打开。",
       { exitCode: 3, status },
     );
   }

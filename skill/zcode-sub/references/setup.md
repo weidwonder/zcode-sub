@@ -15,7 +15,7 @@ ZCode 桌面版需已装「本机任务 API」补丁：setup 健康检查报 `zc
 
 ## 2. 一次性配置：zcode-sub setup
 
-跑 setup 前先征得用户同意——开关文件不存在或未启用时它会写 <真实家目录>/.zcode/v2/local-task-api.json（属于改 ZCode 配置），且写完需要重启 ZCode；不能确认该文件已存在且 enabled:true 时一律先问。setup 写入前会打印将要写的路径与内容摘要（token 只露前 4 位）。
+跑 setup 前先征得用户同意——开关文件不存在或未启用时它会写 <真实家目录>/.zcode/v2/local-task-api.json（属于改 ZCode 配置），且写完需要重启 ZCode；不能确认该文件已存在且 enabled:true 时一律先问。setup 打印「将要写的路径与内容摘要（token 只露前 4 位）」后**立即写入**，没有预览模式。确认开关文件状态可只读 enabled 字段（如 `node -e 'console.log(JSON.parse(require("fs").readFileSync(process.argv[1])).enabled)' <路径>`），不要整份读出 token。
 
 - 检查/写开关文件 `<真实家目录>/.zcode/v2/local-task-api.json`（**不是 `$HOME`**——HOME 被重定向的环境先看 §5；不确定 `<真实家目录>` 时向用户询问登录用户名或家目录，不要猜）；写完需重启 ZCode 生效（重启由用户执行——Agent 不自行结束或重启 ZCode 进程，告知用户后等用户操作）；
 - 健康检查应见「✓ 本机任务 API 正常」；
@@ -57,4 +57,4 @@ export ZCODE_DATA_BASE_DIR=/Users/<你的用户名>
 exec <仓库路径>/bin/zcode-sub.js "$@"
 ```
 
-工作区要求：`run --cwd` 的工作区必须已在 ZCode 打开（本地窗口）；未打开或为远端 → 409，请用户在 ZCode GUI 打开后再派发。
+工作区要求：`--cwd` 须为本机存在的目录绝对路径——未打开时 ZCode 会自动在当前窗口加该目录的标签页（无确认弹窗，最长等 30 秒）；远端路径或自动打开失败 → exit 3（详见 troubleshooting 码表）。

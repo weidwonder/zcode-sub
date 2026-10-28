@@ -896,7 +896,7 @@ test("models：工作区未打开（409）→ exit 3 zcode_workspace_not_open（
   const result = await runCli(["models", "--cwd", "/workspace-closed"]);
   assert.equal(result.status, 3);
   assert.match(result.stderr, /zcode_workspace_not_open/u);
-  assert.match(result.stderr, /先在 ZCode 里打开该工作区/u);
+  assert.match(result.stderr, /先请用户在 ZCode 手动打开/u);
 });
 
 test("run：--model 预校验遇工作区未打开（409）→ 同为 exit 3（与不带 --model 的 createTask 409 口径闭合）", async () => {
@@ -1040,7 +1040,8 @@ test("wait 打印 steer 注入结果（injected 与 fellBack）；steer 事件�
   const injected = await runCli(["wait", "steer-1", "--timeout", "5"]);
   assert.equal(injected.status, 0, injected.stderr);
   assert.match(injected.stdout, /\[input\.steered\] 你的引导已受理（commandId=cmd-\d+）；注入结果以事件流为准/u);
-  assert.match(injected.stdout, /\[steer\.injected\] 引导已注入当前轮（打断生效）/u);
+  assert.match(injected.stdout, /\[steer\.injected\] 引导已注入当前轮/u);
+  assert.ok(!injected.stdout.includes("（打断生效）"), "旧口径「打断生效」尾巴应已移除");
 
   // 3) 降级/拒绝：wait 打印 steer.fellBack 并带原因
   const again = await runCli(["send", "steer-1", "再插一句", "--steer"]);
@@ -1085,7 +1086,8 @@ test("wait 启动后再 send --steer：对账集合实时刷新，自己的引�
   assert.equal(result.status, 0, result.stderr);
   assert.match(result.stdout, /\[input\.steered\] 你的引导已受理（commandId=cmd-\d+）；注入结果以事件流为准/u);
   assert.ok(!result.stdout.includes("来自 GUI 侧的引导"), `自己的引导不得误判成 GUI 侧：${result.stdout}`);
-  assert.match(result.stdout, /\[steer\.injected\] 引导已注入当前轮（打断生效）/u);
+  assert.match(result.stdout, /\[steer\.injected\] 引导已注入当前轮/u);
+  assert.ok(!result.stdout.includes("（打断生效）"), "旧口径「打断生效」尾巴应已移除");
   settle("steer-live");
 });
 
@@ -1226,7 +1228,7 @@ test("result：终态但无回复文本 → 打印占位提示", async () => {
   assert.match(result.stdout, /（无助手回复文本/u);
 });
 
-test("wait：事件打印与状态推进、信箱优先、permission 提示、resync 兜底", async () => {
+test("wait：事件打印与状态推进、信箱优先、permission 提示", async () => {
   const { taskId } = await dispatchTask("wait-1");
 
   // 1) turn.completed 事件 → 打印并置 idle
@@ -1250,13 +1252,52 @@ test("wait：事件打印与状态推进、信箱优先、permission 提示、re
   assert.equal(permission.status, 0, permission.stderr);
   assert.ok(permission.stdout.includes("[permission.requested] 要执行终端命令"));
   assert.match(permission.stdout, /⏳ 请在 ZCode GUI 处理该权限请求/u);
+});
 
-  // 4) 事件缓冲溢出 → resync 提示改用 result 轮询，并同步末次状态
+test("wait：resync → 持久游标归 0 继续跟随、不重复报警", async () => {
+  const { taskId } = await dispatchTask("resync-1");
+  settle("resync-1");
+
+  // 先拿到事件推进游标（分片 eventsSeq → 1）
+  fake.emitEvent(taskId, "assistant.message", { text: "重启前事件" });
+  const first = await runCli(["wait", "resync-1", "--timeout", "5"]);
+  assert.equal(first.status, 0, first.stderr);
+  assert.equal(loadTasks(home).tasks["resync-1"].eventsSeq, 1);
+
+  // ZCode 重启/缓冲释放：缓冲清空（resetEventSeq）+ A 侧对 after>0 回 {resync:true}
+  // （simulateResync 一次）。只 simulateResync 不清缓冲的话，游标归 0 后会立即重放旧
+  // 事件、到不了 TIMEOUT，与真机「重启后缓冲为空」不符。
+  fake.resetEventSeq(taskId);
   fake.simulateResync(taskId);
-  const resync = await runCli(["wait", "wait-1", "--timeout", "5"]);
-  assert.equal(resync.status, 0, resync.stderr);
-  assert.match(resync.stdout, /⚠ 事件缓冲溢出，改用 zcode-sub result wait-1 轮询（完整过程见 ZCode GUI）/u);
-  assert.equal(loadTasks(home).tasks["wait-1"].lastStatus, "idle");
+  const resync = await runCli(["wait", "resync-1", "--timeout", "1"]);
+  assert.equal(resync.status, 2, "继续跟随语义：提示后照常等新事件到超时，而非退出收尾");
+  assert.match(resync.stdout, /事件序列已重置/u);
+  assert.match(resync.stdout, /游标归 0/u);
+  assert.ok(!resync.stdout.includes("事件缓冲溢出"), "不再误报「溢出」、不再改用 result 轮询");
+  assert.ok(resync.stdout.endsWith("TIMEOUT\n"));
+  assert.equal(loadTasks(home).tasks["resync-1"].eventsSeq, 0, "持久游标应归 0");
+
+  // 无新 resync：不重复报警，纯 TIMEOUT
+  const again = await runCli(["wait", "resync-1", "--timeout", "1"]);
+  assert.equal(again.status, 2);
+  assert.equal(again.stdout, "TIMEOUT\n", "不应重复打「已重置」提示");
+
+  // 游标 0 起跟随：重启后的新事件正常打印、游标随之推进
+  fake.emitEvent(taskId, "assistant.message", { text: "重启后第一条" });
+  const fourth = await runCli(["wait", "resync-1", "--timeout", "5"]);
+  assert.equal(fourth.status, 0, fourth.stderr);
+  assert.ok(fourth.stdout.includes("[assistant.message] 重启后第一条"), `应打印重启后首条事件：${fourth.stdout}`);
+  assert.equal(loadTasks(home).tasks["resync-1"].eventsSeq, 1);
+  settle("resync-1");
+});
+
+test("wait：--timeout 坏值（0/非数值）→ exit 1 用法错误，不静默落默认 600", async () => {
+  const zero = await runCli(["wait", "x", "--timeout", "0"]);
+  assert.equal(zero.status, 1);
+  assert.match(zero.stderr, /--timeout 需要/u);
+  const abc = await runCli(["wait", "x", "--timeout", "abc"]);
+  assert.equal(abc.status, 1);
+  assert.match(abc.stderr, /--timeout 需要/u);
 });
 
 test("wait：长轮询挂起中事件到达 → 立即唤醒而非等满超时", async () => {

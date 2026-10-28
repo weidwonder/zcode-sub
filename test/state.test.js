@@ -176,6 +176,28 @@ test("任务更新：只动给定字段；不存在的 name 返回 null 不抛",
   }
 });
 
+test("updateTask 显式重置游标：resetEventsSeq 直接写值（可变小）；普通 patch 仍取 max；标志不落盘", () => {
+  const home = tempHome();
+  try {
+    registerTask(home, "t1", { taskId: "task-reset", workspacePath: "/tmp/ws" });
+    updateTask(home, "t1", { eventsSeq: 5 });
+    assert.equal(getTask(home, "t1").eventsSeq, 5);
+    // 不带标志的普通 patch 仍取 max（防并发乱序）：较小值不得回退较大的存量游标
+    updateTask(home, "t1", { eventsSeq: 3 });
+    assert.equal(getTask(home, "t1").eventsSeq, 5);
+    // 显式重置：ZCode 重启/缓冲释放后游标归零——直接写入 patch 值，不被 max 抵消
+    updateTask(home, "t1", { eventsSeq: 0, resetEventsSeq: true });
+    assert.equal(getTask(home, "t1").eventsSeq, 0);
+    // 重置后普通推进照常（游标没被冻死）：从 0 起正常 max 前进
+    updateTask(home, "t1", { eventsSeq: 3 });
+    assert.equal(getTask(home, "t1").eventsSeq, 3);
+    // resetEventsSeq 是调用方标志，不得落进分片 JSON
+    assert.equal("resetEventsSeq" in JSON.parse(readFileSync(shardPath(home, "t1"), "utf8")), false);
+  } finally {
+    rmSync(home, { recursive: true, force: true });
+  }
+});
+
 test("listTaskNames 按创建时间升序", () => {
   const home = tempHome();
   try {

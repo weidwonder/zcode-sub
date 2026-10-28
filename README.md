@@ -66,10 +66,10 @@ exec /path/to/zcode-sub/bin/zcode-sub.js "$@"
 ## 重要边界
 
 - **多任务并行有上限**：每次 `run` 在 ZCode 新建一个对话，name→taskId 映射存本地；同时未结束（运行/等待/派发中）的任务数上限默认 4，`ZCODE_SUB_MAX_RUNNING` 可调，超限报 `zcode_too_many_running`。
-- **运行中补充消息**：`send` 默认 `auto`（与 GUI 运行中发送的默认行为一致）；`--steer` = 真打断（ZCode 无法打断时按上游应答降级为 queued）、`--queue` = 强制排队；空闲任务的 `--steer` 按实际去向应答 `sent`（等同普通发送）。返回的 `sent`/`queued`/`steered` 与 commandId 按应答如实打印。auto 运行中的去向由会话 follow-up mode 决定（GUI 默认排队）——要即时打断用 `--steer`；`steered` 应答后用 `wait` 看注入结果（`steer.injected`=生效 / `steer.fellBack`=被降级或拒绝，消息将按排队处理或需重发）。wait 打印 `[input.steered]` 时按本地记录对账：`你的引导已受理（commandId=…）` 是你的 `--steer`；`来自 GUI 侧的引导（commandId=…）` 是用户在 GUI 手动引导同一任务。
+- **运行中补充消息**：`send` 默认 `auto`（与 GUI 运行中发送的默认行为一致；去向由会话 follow-up mode 决定，GUI 默认排队）；`--steer` = ZCode 原生引导（当前步骤结束时注入，长文本生成时可能等较久——应答仅为受理，注入结果以事件流 `steer.injected`/`steer.fellBack` 为准，fellBack 时看后续有无 input.queued 再决定重发方式）；`--queue` = 强制排队；空闲任务的 `--steer` 按实际去向应答 `sent`（等同普通发送）；要可靠立即改向用 `--interrupt`（截断重发，未完成内容丢弃）。wait 打印 `[input.steered]` 时按本地记录对账：`你的引导已受理（commandId=…）` 是你的 `--steer`；`来自 GUI 侧的引导（commandId=…）` 是用户在 GUI 手动引导同一任务。
 - **默认完全访问**：run 默认 mode=yolo（GUI『完全访问』，用户拍板）——派发的子代理不再卡权限确认；`--mode` 或 config `defaultMode` 可改（11 值枚举）。wait 收到 `permission.requested` 仍会提示去 ZCode GUI 处理（本工具不通过 API 批权限；yolo 下上游一般不再发权限请求，处理逻辑保留）。
 - **事件缓冲与重启**：上游每任务事件有界缓冲（500 条），溢出时 wait 收到 `resync` 提示改用 result 轮询；ZCode 重启后事件缓冲清空、序号可能回退，wait 会重置游标继续等待。
-- **终态口径**：`result` 以 `GET /api/tasks/:id` 的 status 为准（idle/error 即终态，lastAssistantText 为最后回复；停止后完成事件文本可为空）。
+- **终态口径**：`result` 以 `GET /api/tasks/:id` 的 status 为准；send 语义与错误码闭集以 spec §3 为准（本节为使用摘要）（idle/error 即终态，lastAssistantText 为最后回复；停止后完成事件文本可为空）。
 - **副作用安全**：建任务与 send/resume 消息请求均带 `clientRequestId` 幂等键（同键返回首次应答），网络失败同键安全重试一次；其余写入 POST 失败不自动重试，报错时会提示先用 `list`/GUI 核对。并发上限为尽力检查——多进程同时派发的瞬间可能超出。
 - 本工具不写 ZCode 的其他数据文件；开关文件仅 setup 显式写入（已存在时以它为准，`--api-port` 冲突报错不覆盖）。
 

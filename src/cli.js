@@ -27,11 +27,10 @@ const USAGE = `zcode-sub 用法（把 ZCode 桌面版当子代理）：
       --mode 枚举：default/yolo/guarded/plan/edit/acceptEdits/auto/dontAsk/bypassPermissions/autoEdit/build。
       --model/--thought 按模型选择派发（可用值先 zcode-sub models 查；不传用 ZCode 默认或 config 的 defaultModel）。
   zcode-sub send <name> "<消息>" [--steer|--queue|--interrupt]
-      补充消息：默认 auto（运行中的去向由会话设置决定，GUI 默认排队；要即时打断用 --steer）；
-      --steer 强制引导打断（应答仅为受理，注入结果以事件流为准）、--queue 强制排队；
-      --interrupt 截断当前生成（停止→等回空闲→作为新一轮发送，未完成内容丢弃）；--steer 为
-      ZCode 原生引导（在当前步骤结束时注入，长文本生成时可能要等较久）；三者互斥。
-      任务空闲时即接续对话（sent）。
+      补充消息：默认 auto（运行中的去向由会话设置决定，GUI 默认排队）；
+      --steer 请求原生引导（当前步骤结束时注入，长文本生成时可能等较久；应答仅为受理，
+      注入结果以事件流为准）、--queue 强制排队；--interrupt 截断当前生成（停止→等回空闲→
+      作为新一轮发送，未完成内容丢弃）；三者互斥。任务空闲时即接续对话（sent）。
   zcode-sub wait <name> [--timeout 秒]
       阻塞等新事件或子代理主动消息（适合后台运行，退出即唤醒本轮）；超时输出 TIMEOUT（退出码 2）。
       事件类型：turn.started/assistant.message/turn.completed/turn.failed/permission.requested/
@@ -818,6 +817,12 @@ async function cmdWait(home, flags) {
   if (!name) {
     throw usageError("用法：zcode-sub wait <name> [--timeout 秒]");
   }
+  // --timeout 给定但不是正整数 → 用法错误（0 与非数值不再静默落默认 600，与
+  // --api-port/--thought 等坏值同口径）；未给默认 600。
+  const timeoutSec = flags.timeout === undefined ? 600 : Number.parseInt(String(flags.timeout), 10);
+  if (!Number.isInteger(timeoutSec) || timeoutSec <= 0) {
+    throw usageError("--timeout 需要正整数秒数");
+  }
   const task = requireTask(home, name);
   // steer 对账集合：本 CLI 每次 --steer 受理时记入分片的 commandId；打印 input.steered
   // 时对得上的是自己的引导，对不上的是 GUI 侧发起的引导（同任务两路来源）。
@@ -825,7 +830,6 @@ async function cmdWait(home, flags) {
   // wait 启动之后，拿到事件批时重读分片刷新（下方 events.length > 0 分支）。
   let ownSteerIds = new Set(Array.isArray(task.steerCommandIds) ? task.steerCommandIds : []);
   const config = requireConfig(home);
-  const timeoutSec = Number.parseInt(String(flags.timeout ?? "600"), 10) || 600;
   const deadline = Date.now() + timeoutSec * 1000;
   let after = task.eventsSeq ?? 0;
 
@@ -869,15 +873,21 @@ async function cmdWait(home, flags) {
 
     const payload = await api.getEvents(config, task.taskId, after, Math.min(30_000, remainingMs), task.workspacePath);
     if (payload?.resync) {
+      // A 最终语义（local-task-api.md）：缓冲释放/重启后 after>0 返回 {resync:true}，after=0 可重新跟随。
+      // 持久游标重置为 0 后继续跟随——只提示一次，不退出、不每次报溢出。
       const fresh = await api.getTask(config, task.taskId, task.workspacePath);
-      process.stdout.write(`⚠ 事件缓冲溢出，改用 zcode-sub result ${name} 轮询（完整过程见 ZCode GUI）\n`);
-      tasks.updateTask(home, name, { lastStatus: fresh.status });
-      return;
+      process.stdout.write(
+        `⚠ 事件序列已重置（ZCode 可能重启或缓冲已释放）：游标归 0，继续跟随新事件（历史进展用 result 或 ZCode GUI 查看）\n`,
+      );
+      tasks.updateTask(home, name, { lastStatus: fresh.status, eventsSeq: 0, resetEventsSeq: true });
+      after = 0;
+      continue;
     }
     const events = Array.isArray(payload?.events) ? payload.events : [];
     if (events.length === 0 && Number.isFinite(payload?.nextSeq) && payload.nextSeq < after) {
-      // ZCode 重启会清空事件缓冲、seq 归零：游标跟着回退，继续等新事件（不算新事件、不退出）
-      tasks.updateTask(home, name, { eventsSeq: payload.nextSeq });
+      // ZCode 重启会清空事件缓冲、seq 归零：游标跟着回退，继续等新事件（不算新事件、不退出）。
+      // 较小值要真能写回，必须带 resetEventsSeq（否则被合并写的 max 抵消）。
+      tasks.updateTask(home, name, { eventsSeq: payload.nextSeq, resetEventsSeq: true });
       process.stdout.write(`⚠ 事件序列已重置（ZCode 可能重启）：${after}→${payload.nextSeq}，继续等待新事件\n`);
       after = payload.nextSeq;
       continue;
@@ -954,7 +964,7 @@ const STEER_EVENT_TEXT = {
     ownIds.has(event.commandId)
       ? `你的引导已受理（commandId=${event.commandId ?? "?"}）；注入结果以事件流为准`
       : `来自 GUI 侧的引导（commandId=${event.commandId ?? "?"}）`,
-  "steer.injected": (_event, _ownIds) => "引导已注入当前轮（打断生效）",
+  "steer.injected": (_event, _ownIds) => "引导已注入当前轮",
   "steer.fellBack": (event, _ownIds) => `引导被降级/拒绝，原因：${event.error ?? "?"}——消息将按排队处理或需重发`,
 };
 

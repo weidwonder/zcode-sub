@@ -151,12 +151,24 @@ export function updateTask(home, name, patch) {
   // 写前重读合并：并发写方（wait 的 eventsSeq / send 的 steerCommandIds）互不覆盖——
   // 以刚重读到的最新分片为底应用增量（lastStatus 直接覆盖、eventsSeq 取 max），
   // 后写者不再把先写者刚落的字段冲掉；重读缺失/损坏时维持原读到的分片直接覆盖。
+  // 重读只把冲突窗口缩小到[第二次读→rename]之间，并未消除：残余竞态下 steerCommandIds
+  // 丢失会致对账误标「GUI 侧」、eventsSeq 丢失会致事件重放；标准工作流（单 wait 进程）不受影响。
   const fresh = readShard(file);
   const record = fresh.record ?? shard.record;
   if (patch.lastStatus !== undefined) record.lastStatus = patch.lastStatus;
   if (patch.eventsSeq !== undefined) {
-    record.eventsSeq = fresh.record ? Math.max(record.eventsSeq ?? 0, patch.eventsSeq) : patch.eventsSeq;
+    // 显式重置（resetEventsSeq）用于 ZCode 重启/缓冲释放后的游标归零，直接写入 patch 值
+    // （可变小）；普通推进取 max 防并发乱序（后写者的旧值不得回退先写者的新值）。
+    if (patch.resetEventsSeq) {
+      record.eventsSeq = patch.eventsSeq;
+    } else if (fresh.record) {
+      record.eventsSeq = Math.max(record.eventsSeq ?? 0, patch.eventsSeq);
+    } else {
+      record.eventsSeq = patch.eventsSeq;
+    }
   }
+  // resetEventsSeq 是调用方标志（选写回策略用），不是分片字段，不得落盘
+  delete record.resetEventsSeq;
   atomicWriteJson(file, record);
   return record;
 }
@@ -171,7 +183,9 @@ export function appendSteerCommandId(home, name, commandId) {
   if (!shard.record) return null;
   // 写前重读合并：并发写方（wait 的 eventsSeq / send 的 steerCommandIds）互不覆盖——
   // 以刚重读到的最新分片为底追加（fresh 的 lastStatus/eventsSeq 原样保留），重读
-  // 缺失/损坏时维持原读到的分片。
+  // 缺失/损坏时维持原读到的分片。重读只把冲突窗口缩小到[第二次读→rename]之间，
+  // 并未消除：残余竞态下 steerCommandIds 丢失会致对账误标「GUI 侧」、eventsSeq 丢失
+  // 会致事件重放；标准工作流（单 wait 进程）不受影响。
   const fresh = readShard(file);
   const record = fresh.record ?? shard.record;
   const ids = Array.isArray(record.steerCommandIds) ? record.steerCommandIds : [];
