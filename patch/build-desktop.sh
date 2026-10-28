@@ -90,7 +90,7 @@ log "包管理器/构建缓存默认重定向到 ${TOOLCHAIN_ROOT}（已显式�
 # 自动切 CLT（node-pty 等 native 依赖的 electron-rebuild 需要 xcodebuild）----
 if [[ "$(uname)" == "Darwin" ]]; then
   XSEL_DIR="$(xcode-select -p 2>/dev/null || true)"
-  if [[ -n "$XSEL_DIR" && ! -x "$XSEL_DIR/usr/bin/xcodebuild" && -x /Library/Developer/CommandLineTools/usr/bin/xcodebuild ]]; then
+  if [[ -n "$XSEL_DIR" && ! -x "$XSEL_DIR/usr/bin/xcodebuild" && -x /Library/Developer/CommandLineTools/usr/bin/clang && -d /Library/Developer/CommandLineTools/SDKs/MacOSX.sdk ]]; then
     export DEVELOPER_DIR=/Library/Developer/CommandLineTools
     [[ -d "$DEVELOPER_DIR/SDKs/MacOSX.sdk" ]] && export SDKROOT="$DEVELOPER_DIR/SDKs/MacOSX.sdk"
     log "警告：xcode-select 指向的 $XSEL_DIR 缺 xcodebuild（残缺 Xcode），已自动改用 CommandLineTools（DEVELOPER_DIR${SDKROOT:+ + SDKROOT}）。根治请在座位外执行：sudo xcode-select -s /Library/Developer/CommandLineTools"

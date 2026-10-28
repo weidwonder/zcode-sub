@@ -29,6 +29,10 @@ patch/install-desktop.sh '/Users/weidwonder/projects/ZCode/packages/desktop/dist
 # 3. 打开「ZCode Preview」验证：应免登录（凭据共享）、历史任务在、Webhook Bot 功能可用
 ```
 
+要彻底替代正式版（不只并存）时：把正式版也移到备份区——命令与上面 install 的备份同款
+`mv /Applications/ZCode.app /Users/weidwonder/projects/zcode-backups/apps/ZCode-<版本>-<时间戳>.app`；
+回滚时移回 `/Applications` 即可。两份应用并存期间不需要这一步。
+
 回退：直接打开正式版 ZCode 即可（Preview 可留着或拖进废纸篓，不影响正式版）。
 
 ### 变体：production 原地替换（方案 B）
