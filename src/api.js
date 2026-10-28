@@ -120,7 +120,7 @@ export async function probeHealth(config) {
   };
 }
 
-export async function createTask(config, { workspacePath, prompt, title, mode, clientRequestId }) {
+export async function createTask(config, { workspacePath, prompt, title, mode, modelSelection, clientRequestId }) {
   const { status, payload } = await apiFetch(config, "/api/tasks", {
     method: "POST",
     body: {
@@ -129,6 +129,8 @@ export async function createTask(config, { workspacePath, prompt, title, mode, c
       title,
       // mode 可选（偏离#11 枚举见端点白名单）；CLI 暂无 --mode，仅为接口完备
       ...(mode ? { mode } : {}),
+      // 偏离#17：模型选择（{providerId, modelId, options?{reasoningLevel}}），有值（对象）才进 body
+      ...(modelSelection ? { modelSelection } : {}),
       ...(clientRequestId ? { clientRequestId } : {}),
     },
     // 有幂等键（端点侧按 clientRequestId 短期去重）才允许网络类失败重试，防双建
@@ -154,6 +156,45 @@ export async function createTask(config, { workspacePath, prompt, title, mode, c
     "zcode_create_failed",
     `zcode_create_failed: ZCode 返回 status=${status}（${JSON.stringify(payload)}），创建任务失败。`,
     { exitCode: 1, status },
+  );
+}
+
+// 模型目录（偏离#18）：GET /api/models，workspacePath 为非空字符串时带 query 供按工作区路由。
+// 2xx 返回 payload（{providers, preferred?}，preferred 形体即 modelSelection 可原样回传）；
+// 错误走统一约定：401/403→zcode_unauthorized(5)（apiFetch 内抛），其余 ≥400 → zcode_send_failed(4)，
+// 网络失败→zcode_api_unreachable(2)（apiFetch 内抛）。
+export async function listModels(config, workspacePath) {
+  const wsQuery =
+    typeof workspacePath === "string" && workspacePath ? `?workspacePath=${encodeURIComponent(workspacePath)}` : "";
+  const { status, payload } = await apiFetch(config, `/api/models${wsQuery}`);
+  if (status >= 200 && status < 300) return payload;
+  throw new ApiError(
+    "zcode_send_failed",
+    `zcode_send_failed: ZCode 返回 status=${status}，模型列表查询失败。`,
+    { exitCode: 4, status },
+  );
+}
+
+// 换模型（偏离#19：运行中允许，下一轮生效）。body 形体 {modelSelection, workspacePath?,
+// clientRequestId?}；clientRequestId 真值时允许网络类失败同键重试一次（偏离#20：端点侧
+// 幂等为独立 model 命名空间，与 send/create 隔离）。2xx 返回 payload；≥400 抛 zcode_send_failed(4)。
+export async function setModel(config, taskId, modelSelection, workspacePath, clientRequestId) {
+  const { status, payload } = await apiFetch(config, `/api/tasks/${encodeURIComponent(taskId)}/model`, {
+    method: "POST",
+    body: {
+      modelSelection,
+      ...(workspacePath ? { workspacePath } : {}),
+      ...(clientRequestId !== undefined ? { clientRequestId } : {}),
+    },
+    ...(clientRequestId ? { retryOnNetworkError: true } : {}),
+  });
+  if (status >= 200 && status < 300) return payload;
+  throw new ApiError(
+    "zcode_send_failed",
+    status === 404
+      ? `zcode_send_failed: 任务 ${taskId} 不存在，可能已被删除。`
+      : `zcode_send_failed: ZCode 返回 status=${status}，任务 ${taskId} 换模型失败。`,
+    { exitCode: 4, status },
   );
 }
 

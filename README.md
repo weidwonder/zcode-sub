@@ -45,18 +45,22 @@ exec /path/to/zcode-sub/bin/zcode-sub.js "$@"
 | 命令 | 作用 |
 |---|---|
 | `zcode-sub setup [--api-port …]` | 写/读开关文件、健康检查、打印 MCP 配置 |
-| `zcode-sub run "<任务>" --cwd <绝对路径> [--name <名>] [--mode <模式>]` | 在 ZCode 新建对话执行任务；默认 mode=yolo（完全访问，子代理不卡权限确认）；stdout 一行 JSON（name/taskId） |
+| `zcode-sub run "<任务>" --cwd <绝对路径> [--name <名>] [--mode <模式>] [--model <providerId/modelId>] [--thought <档位>]` | 在 ZCode 新建对话执行任务；默认 mode=yolo（完全访问，子代理不卡权限确认）；stdout 一行 JSON（name/taskId） |
 | `zcode-sub send <name> "<消息>" [--steer\|--queue]` | 补充消息：默认 auto（运行中=GUI 默认排队/引导）；`--steer` = 请求**打断**当前生成（应答 `steered` 仅为受理，注入结果以事件流 `steer.injected` / `steer.fellBack` 为准）；空闲=接续对话 |
 | `zcode-sub wait <name> [--timeout 秒]` | 阻塞等新事件/子代理主动消息（超时 TIMEOUT，退出码 2） |
 | `zcode-sub result <name>` | 最后回复全文 + 状态；还在跑会明确说 |
 | `zcode-sub resume <name> "<继续文本>"` | 空闲任务接续对话（运行中补充用 send） |
 | `zcode-sub stop <name>` | 停止生成 |
 | `zcode-sub list [--json]` | 本地任务表（name/taskId/状态） |
+| `zcode-sub models [--cwd <绝对路径>] [--json]` | 列可用模型（providerId/modelId/思考档位/默认标记） |
+| `zcode-sub model <name> <providerId/modelId> [--thought <档位>]` | 给已派发任务换模型（下一轮生效） |
 | `zcode-sub mcp` | stdio MCP server（`reply_to_parent`），由 ZCode 拉起 |
 
 退出码：`1` 用法错误（含未知参数、未配置、本地无此任务、EACCES）；`2` 连不上本机任务 API 或 wait 超时（stdout `TIMEOUT`=超时再等一次；stderr `zcode_api_unreachable`=ZCode 没开）；`3` 工作区未在 ZCode 打开（含远端工作区，409）；`4` 按 taskId 的请求失败（含任务被删）或运行中 resume 被拒；`5` token/Host 校验失败；`7` 任务名非法或重名；`8` 未结束任务数达上限（默认 4，`ZCODE_SUB_MAX_RUNNING` 调整）。任务名仅 `[A-Za-z0-9._-]+`。完整错误码闭集与事件类型清单以 spec §3 为准（`docs/spec/2026-10-27-zcode-sub-bridge-eng-spec.md`）。
 
-其他：未知参数按命令白名单报用法错误（exit 1，不静默忽略）；`--version` 打印版本号；`--model` 为模型选择预留、传入会明确报尚未支持。诊断：`ZCODE_SUB_DEBUG=1` 时 API 请求/响应摘要追加 `~/.zcode-sub/debug.log`（不含 token 与 prompt 正文）。
+- **按模型派发/换模型**：可用值先 `zcode-sub models` 查；`run --model <providerId/modelId> [--thought <档位>]` 派发时指定（`config.json` 可设 `defaultModel` 兜底，不传用 ZCode 默认），`zcode-sub model <name> …` 给已派发任务换（下一轮生效，运行中允许）。非法值本地预校验报 `zcode_model_invalid`（exit 1）并列出可选值。
+
+其他：未知参数按命令白名单报用法错误（exit 1，不静默忽略）；`--version` 打印版本号。诊断：`ZCODE_SUB_DEBUG=1` 时 API 请求/响应摘要追加 `~/.zcode-sub/debug.log`（不含 token 与 prompt 正文）。
 
 ## 重要边界
 

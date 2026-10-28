@@ -98,6 +98,31 @@ test("配置：损坏按 null；updateConfig 以缺省值起步并合并", () =>
   }
 });
 
+test("配置：defaultModel 纯对象才带该键；非对象/null/数组/缺省均不含（旧形状 deepEqual 不破坏）", () => {
+  const home = tempHome();
+  try {
+    const selection = { providerId: "glm", modelId: "glm-4.7", options: { reasoningLevel: "medium" } };
+    saveConfig(home, { apiPort: 47900, token: "tok-1", defaultModel: selection });
+    assert.deepEqual(loadConfig(home), { apiPort: 47900, token: "tok-1", defaultModel: selection });
+
+    for (const bad of [null, "glm/glm-4.7", 42, [], true]) {
+      saveConfig(home, { apiPort: 47900, token: "tok-1", defaultModel: bad });
+      assert.deepEqual(
+        loadConfig(home),
+        { apiPort: 47900, token: "tok-1" },
+        `defaultModel=${JSON.stringify(bad)} 时不应带该键`,
+      );
+    }
+
+    saveConfig(home, { apiPort: 47900, token: "tok-1" });
+    assert.equal("defaultModel" in loadConfig(home), false);
+    // 旧形状读回不变
+    assert.deepEqual(loadConfig(home), { apiPort: 47900, token: "tok-1" });
+  } finally {
+    rmSync(home, { recursive: true, force: true });
+  }
+});
+
 test("任务登记：字段齐全；同名再登记抛 zcode_name_taken（exitCode 7）", () => {
   const home = tempHome();
   try {

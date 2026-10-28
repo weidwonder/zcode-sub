@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, before, test } from "node:test";
 import { startFakeZcode } from "./helpers/fake-zcode.js";
-import { createTask, getEvents, getTask, probeHealth, sendMessage, stopTask } from "../src/api.js";
+import { createTask, getEvents, getTask, listModels, probeHealth, sendMessage, setModel, stopTask } from "../src/api.js";
 
 let fake;
 const config = {
@@ -134,6 +134,112 @@ test("createTask：mode 白名单——越界 400 bad_mode→zcode_create_failed
   const { taskId: plainId } = await createTask(config, { workspacePath: "/w-mode", prompt: "p", title: "t2" });
   assert.equal("mode" in fake.calls.at(-1).body, false, "未传 mode 时 body 不得含 mode 键");
   assert.notEqual(plainId, taskId);
+});
+
+test("listModels：200 返回 providers/preferred；workspacePath 进 query，未传则无 query", async () => {
+  const mark = fake.calls.length;
+  const view = await listModels(config, "/w-models");
+  assert.equal(view.preferred.providerId, "glm");
+  assert.equal(view.preferred.modelId, "glm-4.7");
+  assert.equal(view.providers.length, 2);
+  assert.deepEqual(view.providers[0], {
+    providerId: "glm",
+    displayName: "glm",
+    models: [
+      { modelId: "glm-4.7", displayName: "glm-4.7", thoughtLevels: ["off", "medium", "high"], isDefault: true },
+      { modelId: "glm-4.7-flash", displayName: "glm-4.7-flash", thoughtLevels: [], isDefault: false },
+    ],
+  });
+
+  const record = fake.calls.at(-1);
+  assert.equal(record.method, "GET");
+  assert.equal(
+    new URLSearchParams(record.url.split("?")[1] ?? "").get("workspacePath"),
+    "/w-models",
+    "workspacePath 应进 query",
+  );
+
+  // 不带 workspacePath：URL 无 query
+  await listModels(config);
+  assert.equal(fake.calls.at(-1).url, "/api/models");
+  assert.equal(fake.calls.length - mark, 2, "共两次调用");
+});
+
+test("listModels：错 token 401 → zcode_unauthorized（exit 5）", async () => {
+  await assert.rejects(
+    () => listModels({ ...config, token: "wrong-token" }),
+    (error) => error.code === "zcode_unauthorized" && error.exitCode === 5 && error.status === 401,
+  );
+});
+
+test("setModel：200 {ok:true}；modelSelection/workspacePath/clientRequestId 进 body；同幂等键两次均 200（独立 model 命名空间）", async () => {
+  const { taskId } = await createTask(config, { workspacePath: "/w-setmodel", prompt: "p" });
+  fake.createTaskAlreadyRunning(taskId); // 偏离#19：运行中允许换模型
+
+  const selection = { providerId: "openai", modelId: "gpt-5", options: { reasoningLevel: "high" } };
+  const payload = await setModel(config, taskId, selection, "/w-setmodel", "req-model-dup-1");
+  assert.deepEqual(payload, { ok: true });
+  let record = fake.calls.at(-1);
+  assert.equal(record.method, "POST");
+  assert.equal(record.url.split("?")[0], `/api/tasks/${taskId}/model`);
+  assert.deepEqual(record.body.modelSelection, selection);
+  assert.equal(record.body.workspacePath, "/w-setmodel");
+  assert.equal(record.body.clientRequestId, "req-model-dup-1");
+
+  // 同 clientRequestId 重放：幂等命中也 200 {ok:true}
+  const again = await setModel(config, taskId, selection, "/w-setmodel", "req-model-dup-1");
+  assert.deepEqual(again, { ok: true });
+
+  const modelCalls = fake.calls.filter((call) => call.url.split("?")[0] === `/api/tasks/${taskId}/model`);
+  assert.equal(modelCalls.length, 2);
+});
+
+test("setModel：非法 modelSelection（空 providerId/多余键）→ 400 zcode_send_failed（exit 4）", async () => {
+  const { taskId } = await createTask(config, { workspacePath: "/w-model-bad", prompt: "p" });
+  await assert.rejects(
+    () => setModel(config, taskId, { providerId: "", modelId: "glm-4.7" }, "/w-model-bad"),
+    (error) => error.code === "zcode_send_failed" && error.exitCode === 4 && error.status === 400,
+  );
+  await assert.rejects(
+    () => setModel(config, taskId, { providerId: "glm", modelId: "glm-4.7", extra: 1 }, "/w-model-bad"),
+    (error) => error.code === "zcode_send_failed" && error.exitCode === 4 && error.status === 400,
+  );
+});
+
+test("setModel：任务不存在 → 404 zcode_send_failed（exit 4）", async () => {
+  await assert.rejects(
+    () =>
+      setModel(
+        config,
+        "00000000-0000-4000-8000-000000000000",
+        { providerId: "glm", modelId: "glm-4.7" },
+      ),
+    (error) => error.code === "zcode_send_failed" && error.exitCode === 4 && error.status === 404,
+  );
+});
+
+test("createTask：modelSelection 合法进 body；非法 400 zcode_create_failed；不传不含该键", async () => {
+  const selection = { providerId: "glm", modelId: "glm-4.7", options: { reasoningLevel: "high" } };
+  const { taskId } = await createTask(config, {
+    workspacePath: "/w-create-model",
+    prompt: "p",
+    modelSelection: selection,
+  });
+  assert.match(taskId, /^[0-9a-f-]{36}$/u);
+  assert.deepEqual(fake.calls.at(-1).body.modelSelection, selection);
+
+  await assert.rejects(
+    () =>
+      createTask(config, {
+        workspacePath: "/w-create-model",
+        prompt: "p",
+        modelSelection: { providerId: "glm", modelId: "" },
+      }),
+    (error) => error.code === "zcode_create_failed" && error.exitCode === 1 && error.status === 400,
+  );
+
+  await createTask(config, { workspacePath: "/w-create-model", prompt: "p" });
+  assert.equal("modelSelection" in fake.calls.at(-1).body, false, "未传 modelSelection 时 body 不得含该键");
 });
 
 test("sendMessage：空闲任务 sent；运行中任务 auto→queued、steer→steered", async () => {

@@ -68,7 +68,7 @@ authority_refs:
 |---|---|
 | FR-001 | `zcode-sub setup`：健康检查 `GET /health`（校验 `api=="zcode-local-task-api"`、`version==2`）；开关文件 `<dataBaseDir>/.zcode/v2/local-task-api.json` 不存在或无 token 时生成 token（≥32 字节随机）以 0600 写入 `{"enabled":true,"port":47821,"token":...}` 并提示需重启 ZCode；已存在且 enabled 时读回 token/port 存桥接 config；打印 MCP 配置步骤与授权提示（状态目录/ZCode 配置目录不可写时提示 `dwc grant <目录>`，2026-10-27 起两者均已授权，提示按实测可写性输出） |
 | FR-002 | 状态层：`config.json` v2 `{apiPort, token}`；任务登记为每任务一分片 `tasks/<name>.json`（`{taskId,workspacePath,createdAt,lastStatus,eventsSeq,clientRequestId?,steerCommandIds?}`，`wx` 独占创建，读侧聚合；`steerCommandIds` 为本 CLI 各次 steer 受理的对账键，`appendSteerCommandId` 幂等追加、分片缺失/损坏时不写）；name 沿用 `[A-Za-z0-9._-]+` 校验且与既有任务重名时拒绝 |
-| FR-003 | `zcode-sub run "<任务>" --cwd <绝对路径> [--name <名>] [--mode <模式>]`：mode 取值 `--mode` > `config.defaultMode` > **默认 `yolo`（完全访问，用户拍板 D-v2-17）**，非法枚举本地拒绝 exit 1；本地重名预查（已登记名 exit 7、不触上游；EEXIST 兜并发竞态）→ `POST /api/tasks {workspacePath, prompt, title:name, clientRequestId, mode}`；prompt MUST 含子代理身份说明（task 名、reply_to_parent 用法、最终总结要求）；stdout 一行 JSON（name/taskId/status/workspacePath/clientRequestId/warning?）；409 → `zcode_workspace_not_open` exit 3 |
+| FR-003 | `zcode-sub run "<任务>" --cwd <绝对路径> [--name <名>] [--mode <模式>] [--model <providerId/modelId>] [--thought <档位>]`：mode 取值 `--mode` > `config.defaultMode` > **默认 `yolo`（完全访问，用户拍板 D-v2-17）**，非法枚举本地拒绝 exit 1；modelSelection 取值 `--model/--thought` > `config.defaultModel`（同形体）> **不带（用 ZCode 默认）**（FR-024 预校验）；本地重名预查（已登记名 exit 7、不触上游；EEXIST 兜并发竞态）→ `POST /api/tasks {workspacePath, prompt, title:name, clientRequestId, mode, modelSelection?}`；prompt MUST 含子代理身份说明（task 名、reply_to_parent 用法、最终总结要求）；stdout 一行 JSON（name/taskId/status/workspacePath/clientRequestId/warning?）；409 → `zcode_workspace_not_open` exit 3 |
 | FR-004 | `zcode-sub send <name> "<消息>" [--steer\|--queue]`：`POST /api/tasks/:id/messages {text, delivery:"auto"\|"steer"\|"queue", clientRequestId}`（默认 auto 在运行中的去向由会话 follow-up mode 决定，GUI 默认排队；要即时打断用 `--steer`；**send/resume 均生成 `zsub-<uuid>` 幂等键**——网络失败同键安全重试一次，与 run 同口径）；打印 `{delivery: sent\|queued\|steered, commandId?}`——`steered` 仅为受理，CLI 附提示注入结果以事件流为准（见 FR-005）；**空闲任务收到 --steer 上游按实际去向应答 `sent`**（透传如实显示，无受理提示、不记对账键）；应答 `steered` 且带 commandId 时记入分片 `steerCommandIds` |
 | FR-005 | `zcode-sub wait <name> [--timeout 秒]`：循环 = 查信箱新行 → 无则 `GET /events?after=<eventsSeq>&waitMs=` 长轮询（waitMs=min(30000, 剩余超时)；resync 时 GET 任务并打印溢出提示）；新事件（turn.started/assistant.message/turn.completed/turn.failed/permission.requested/input.queued/input.steered/steer.injected/steer.fellBack）或信箱新 reply 行 → 打印（permission.requested 附「请在 ZCode GUI 处理」；input.steered 按本地对账键分「你的引导已受理（commandId=…）」/「来自 GUI 侧的引导（commandId=…）」；steer.fellBack 附「引导被降级/拒绝，原因…，消息将按排队处理或需重发」）→ 推进游标 → exit 0；超时 TIMEOUT exit 2。三种 steer 事件只打印，不参与 lastStatus 推导（终态仍只认 turn.completed/turn.failed） |
 | FR-006 | `zcode-sub result <name>`：`GET /api/tasks/:id`；status ∈ running/waiting_permission/waiting_input → 明确说在跑（waiting_* 附 GUI 提示）；idle/error → 打印 status 与 lastAssistantText 全文 |
@@ -81,7 +81,8 @@ authority_refs:
 | FR-013 | Skill `skill/zcode-sub/SKILL.md` 按 v2 更新（并行、send 语义、permission 提示） |
 | FR-014 | README 按 v2 更新（安装、setup、命令、边界） |
 | FR-015 | 删除 v1 残留：`src/daemon.js`、`src/ensure.js`、`src/ingress.js`、v1 fake-zcode、bind/new/status/stop 文本命令逻辑、`bot-webhook-ingress.json` 读写、config 的 botId/secret/userId/daemonPort 字段 |
-| FR-023（Skill 评审轮） | CLI 工具性：`--version`（读 package.json，exit 0）；未知参数按命令白名单报用法错误（exit 1，不再静默忽略）；`--model` 为模型选择接口预留——传入明确报「尚未支持」exit 1（防 Skill 预留后被旧版静默吞参）；USAGE 扩充承接从 SKILL.md 下沉的细节（mode 11 值枚举、9 类事件、--timeout 默认 600、环境变量表）；setup 遇 HOME 重定向的提示直接给 shim 示例与 `ZCODE_SUB_HOME`/`ZCODE_DATA_BASE_DIR` 两个变量的含义 |
+| FR-023（Skill 评审轮） | CLI 工具性：`--version`（读 package.json，exit 0）；未知参数按命令白名单报用法错误（exit 1，不再静默忽略）；USAGE 扩充承接从 SKILL.md 下沉的细节（mode 11 值枚举、9 类事件、--timeout 默认 600、环境变量表）；setup 遇 HOME 重定向的提示直接给 shim 示例与 `ZCODE_SUB_HOME`/`ZCODE_DATA_BASE_DIR` 两个变量的含义 |
+| FR-024（模型选择轮） | `zcode-sub models [--cwd <绝对路径>] [--json]`：调 `GET /api/models`，文本表列 providerId/modelId/thoughtLevels/默认标记（preferred 命中 `*`）、--json 原样；`zcode-sub model <name> <providerId/modelId> [--thought <档位>]`：本地预校验后 `POST /api/tasks/:id/model`（带分片 workspacePath 与 clientRequestId），成功打印「已切换模型 …（下一轮生效）」；**本地预校验**：带 modelSelection 的 run/model 先 GET /api/models，模型不存在/档位非法/模型无档位 → `zcode_model_invalid` exit 1 并列出可选值；`resolveModelSelection`：`--model <providerId/modelId>`（格式非法用法错误）与 `--thought` 合成，优先级 flags > `config.defaultModel`，最终无 providerId/modelId 则不带、--thought 无模型时用法错误 |
 | FR-016 | 并发派发上限（评审门第一轮拍板）：run 前对本地登记中非终态（dispatched/running/waiting_permission/waiting_input/未知值）任务逐个 GET 刷新后计数，达到上限拒绝派发；上限默认 4，环境变量 `ZCODE_SUB_MAX_RUNNING` 可调；新错误码 `zcode_too_many_running`（退出码 8）。刷新返回 404 的任务视为已在 GUI 删除，本地置 `error` 终态释放额度（评审二轮 N2）；上限为尽力检查，多进程同时派发瞬间可能超出（N4） |
 | FR-017 | 副作用 POST 的重试纪律：`POST /api/tasks` 携带 `clientRequestId` 幂等键（run 生成并记入分片；上游短期去重，同键返回同一 taskId），网络失败以同键重试一次；其余 POST（messages/stop）不重试，失败报 `zcode_api_unreachable` 并提示「任务可能已创建/已执行，先 list / GUI 核对」；GET 保留一次重试（评审二轮按上游新增 clientRequestId 撤回一轮的保守「POST 一律不重试」） |
 | FR-018 | 任务登记并发安全：每任务一分片文件 `<home>/tasks/<name>.json`（registerTask 用 `wx` 独占创建防同名竞态）；单分片损坏时先备份 `.corrupt-<ts>` 再按不存在处理 |
@@ -121,7 +122,9 @@ v1 的 seq/dispatch/status/notice 行语义删除；daemon.json、daemon.log、c
 | 接口 | 入参 | 出参 | 调用方 | 版本 |
 |---|---|---|---|---|
 | `GET /health`（上游） | — | `{ok,api:"zcode-local-task-api",version:2,zcodeVersion}` | setup | v2 |
-| `POST /api/tasks`（上游） | Bearer；`{workspacePath,prompt,mode?,title?,clientRequestId?}` | 201 `{taskId}` 或 `{taskId,warning:"first_prompt_failed"}`（部分失败，任务已建）；同 `clientRequestId` 去重命中 200 返回同一 `{taskId}`；mode 非法 400；409 `{error:"workspace_not_open"}` | run | v2 |
+| `POST /api/tasks`（上游） | Bearer；`{workspacePath,prompt,mode?,title?,clientRequestId?,modelSelection?}` | 201 `{taskId}` 或 `{taskId,warning:"first_prompt_failed"}`（部分失败，任务已建）；同 `clientRequestId` 去重命中 200 返回同一 `{taskId}`；mode 非法 400；modelSelection 非法（多余键/空串）400；409 `{error:"workspace_not_open"}` | run | v2 |
+| `GET /api/models`（上游） | `?workspacePath=`（鉴权/409 语义与其它端点一致） | `{providers:[{providerId,displayName,models:[{modelId,displayName,thoughtLevels,isDefault}]}],preferred?}`（preferred 形状即 modelSelection，可原样回传） | models/run/model 预校验 | v2 |
+| `POST /api/tasks/:id/model`（上游） | `{modelSelection(必填，同 strict 400),workspacePath?,clientRequestId?}` | 200 `{ok:true}`；运行中允许；clientRequestId 幂等为独立 model 命名空间（与 send/create 隔离）；404 | model | v2 |
 | `POST /api/tasks/:id/messages`（上游） | `{text,delivery?:"auto"\|"queue"\|"steer",clientRequestId?}`（auto 不带 requestedDelivery，CLI 按会话 follow-up mode 裁决，GUI 默认 queue；steer→guide 与 GUI 同一条 v4 sendText 链路；clientRequestId 可选 1..200、每任务命名空间 10 分钟去重、命中回首次应答含 commandId 原值、空串 400） | 202 `{delivery:"sent"\|"queued"\|"steered",commandId?}`（steered 仅为受理；注入结果以事件流 `input.steered`→`steer.injected`/`steer.fellBack` 为准；**空闲任务收到 steer 按实际去向应答 sent、无 steer 事件**）；404 | send/resume | v2 |
 | `POST /api/tasks/:id/stop`（上游） | — | 202 | stop | v2 |
 | `GET /api/tasks/:id`（上游） | — | `{taskId,workspacePath,title,status,turnCount,lastAssistantText,updatedAt}` | result/resume/wait(resync) | v2 |
@@ -135,7 +138,7 @@ v1 的 seq/dispatch/status/notice 行语义删除；daemon.json、daemon.log、c
 - **本集成不做哪些写操作**：不批权限、不写 ZCode 数据文件（开关文件按契约第 1 条「由用户或桥接程序 setup 写入」，仅 setup 显式执行）。
 - **B 依赖的字段级契约（与 A 实装对齐后的终值）**：
   - `events[i]`：`seq`（每任务从 1 单调，缓冲 500，溢出 `{resync:true}`）、`at`（毫秒）、`type` ∈ turn.started / assistant.message / turn.completed / turn.failed / permission.requested / input.queued / input.steered / steer.injected / steer.fellBack；payload 字段 `turn.started{turnId}`、`assistant.message{text}`、`turn.completed{text}`（停止后 text 可为空）、`turn.failed{error}`、`permission.requested{summary}`、`input.queued{commandId}`、`input.steered{commandId}`（由 CLI `turn_steer_queued` 投影产生——steer 受理不再由 API 自产事件；commandId 与 202 应答 commandId 相等，是对账键——同一任务也可能收到 GUI 侧引导的同型事件，B 按 commandId 严格对账：在本地分片 `steerCommandIds` 里→「你的引导已受理」，不在→「来自 GUI 侧的引导」）、`steer.injected`（由 `turn_steer_status` drained 投影——引导已注入当前轮，无额外 payload）、`steer.fellBack{error}`（由 `turn_steer_status` discarded/rejected 投影——引导被降级/拒绝）。
-  - `POST /api/tasks` 的 `title` 传 name；可选 `clientRequestId` 为去重幂等键（**1..200 字符、10 分钟窗口**，命中返回同一 taskId、状态码 200）——run 生成 `zsub-<uuid>`（41 字符）并记入本地分片，重试间隔毫秒级远在窗口内；`mode` 为 11 值枚举（default/yolo/guarded/plan/edit/acceptEdits/auto/dontAsk/bypassPermissions/autoEdit/build），非法 400——B 默认传 `yolo`、`--mode`/`config.defaultMode` 可覆盖（D-v2-17，本地预校验非法值）；`turnCount` 为快照中 assistant 消息条数。
+  - `POST /api/tasks` 的 `title` 传 name；可选 `clientRequestId` 为去重幂等键（**1..200 字符、10 分钟窗口**，命中返回同一 taskId、状态码 200）——run 生成 `zsub-<uuid>`（41 字符）并记入本地分片，重试间隔毫秒级远在窗口内；`mode` 为 11 值枚举（default/yolo/guarded/plan/edit/acceptEdits/auto/dontAsk/bypassPermissions/autoEdit/build），非法 400——B 默认传 `yolo`、`--mode`/`config.defaultMode` 可覆盖（D-v2-17，本地预校验非法值）；`turnCount` 为快照中 assistant 消息条数；`modelSelection` = `{providerId, modelId, options?:{reasoningLevel}}`（strict：非空串、多余键/空串 400；`GET /api/models` 的 `preferred` 对象可原样回传；`GET /api/models` 的 thoughtLevels 缺失视为 `[]`=该模型无档位）。
   - **create 部分失败**（偏离 #13）：首条 prompt 发送失败仍回 `201 {taskId, warning:"first_prompt_failed"}`——B 照常登记，stdout JSON 带 `warning` 字段、stderr 提示用 send 补发、退出码 0（任务已建，非零会误判整轮失败）。
   - **op 异常**（偏离 #14）：Host 退出时在飞请求结清为 `503 {error:"unavailable_host"}`——B 视为暂态：GET/带幂等键的 createTask 重试一次，其余 POST 不重试，最终失败报 `zcode_api_unreachable`（exit 2，文案带 unavailable_host）。
   - `GET /api/tasks/:id` 的 `lastAssistantText` 为最近一条完整助手回复（idle 时即最终回复）。
@@ -243,6 +246,7 @@ tools/call reply_to_parent → task 在本地分片登记中？（不在 → isE
   | config.apiPort | int | 否 | 47821；开关文件已存在时以它为准（`--api-port` 冲突即报错 exit 1，不覆盖用户侧文件——FR-021） | setup 时 |
   | config.token | string | setup 生成 | — | — |
   | config.defaultMode | string | 否 | yolo（run 的 --mode > 此值 > yolo） | — |
+  | config.defaultModel | object（同 modelSelection 形体） | 否 | 不带（用 ZCode 默认；--model/--thought > 此值） | — |
 - **安全不变量**：
   ```
   Invariant 1: CLI/MCP 只请求 127.0.0.1，不发起任何非本机连接
@@ -313,7 +317,7 @@ stateDiagram-v2
 | AC-012 | v1 残留删净（§8.2 逐项：无引用、文件不存在） | FR-015 |
 | AC-013 | 并发上限（默认 4 与 env 覆盖）、POST 重试纪律（createTask 同键重试、其余 POST 不重试）、子进程并行登记不丢、wait 截断（含单条 reply 降级）、游标回退、端口冲突、403/415/405/413、workspacePath 传递均有用例 | FR-016~FR-022 |
 
-覆盖自查：FR-001→AC-002/003/006；FR-002→AC-002/003；FR-003→AC-002/003/004；FR-004→AC-002/008；FR-005→AC-002/004/008；FR-006→AC-002/003；FR-007→AC-002/003；FR-008→AC-002；FR-009→AC-002；FR-010→AC-002/009；FR-011→AC-008；FR-012→AC-010；FR-013→AC-011；FR-014→AC-011；FR-015→AC-012；FR-016~FR-022→AC-013；FR-023→AC-008（--version/未知参数/--model 用例）。全覆盖。
+覆盖自查：FR-001→AC-002/003/006；FR-002→AC-002/003；FR-003→AC-002/003/004；FR-004→AC-002/008；FR-005→AC-002/004/008；FR-006→AC-002/003；FR-007→AC-002/003；FR-008→AC-002；FR-009→AC-002；FR-010→AC-002/009；FR-011→AC-008；FR-012→AC-010；FR-013→AC-011；FR-014→AC-011；FR-015→AC-012；FR-016~FR-022→AC-013；FR-023→AC-008（--version/未知参数用例）；FR-024→AC-008（models/model/预校验用例）。全覆盖。
 
 ## 12. 待澄清点
 无（契约 v2 文本为准；字段假设已集中在 §3 末清单）。
@@ -341,6 +345,7 @@ stateDiagram-v2
 | D-v2-17（真机反馈，用户拍板） | run 默认 mode="yolo"（GUI『完全访问』） | 派发的子代理不再卡权限确认；--mode 与 config.defaultMode 可覆盖 | 权限请求事件（permission.requested）处理逻辑保留——非 yolo 模式或上游仍发请求时照常提示去 GUI |
 | D-v2-18（真机反馈；A 侧 d4c518ba 已落地） | steer 为真打断语义 | --steer = sendPrompt 带 `requestedDelivery:"guide"`（与 GUI 同一条 v4 sendText 链路）；应答 `202 {delivery:"steered",commandId}` 仅为**受理**，注入结果以事件流回报：`input.steered{commandId}`（CLI `turn_steer_queued` 投影，API 不再自产）→ `steer.injected`（drained，已注入当前轮）/ `steer.fellBack{error}`（discarded/rejected，降级/拒绝）；wait 打印三事件、fellBack 明确告知「引导被降级/拒绝，原因…，消息将按排队处理或需重发」，lastStatus 推导不受影响 | 用户要求真打断；受理与注入是两个时刻，必须以事件流为准；旧 enqueue+promote 近似已在 A 侧废弃 |
 | D-v2-19（r6 跟进；A 侧 d2e4fd94） | messages 幂等 + 引导对账 | send/resume 生成 `zsub-<uuid>` clientRequestId（网络失败同键安全重试一次，与 createTask 同口径）；steer 受理的 commandId 记入本地分片，wait 打印 `input.steered` 时按 commandId 对账——命中「你的引导已受理」、未命中「来自 GUI 侧的引导」（GUI 侧对同一任务的引导会产生同型事件）；空闲任务 --steer 上游应答 `sent`，透传如实显示 | 上游 messages 端已支持幂等去重（偏离#12 扩展），不利用则网络重试有双投风险；对账避免把 GUI 侧引导误当自己的操作结果 |
+| D-v2-20（模型选择轮；A 侧 1f04bddf） | 派发时选择模型 | run `--model <providerId/modelId>` + `--thought <档位>` 组装 create 的 `modelSelection`（strict 形体，deprecated model/thoughtLevel 不用）；`config.defaultModel` 同形体兜底；不传不带（用 ZCode 默认）；值域本地预校验（GET /api/models，非法 `zcode_model_invalid` exit 1 列可选值）；新增 `models` 查询与 `model <name>` 换模型命令（换模型运行中允许——GUI 仅 Highspeed 锁、Host 不可见；幂等独立 model 命名空间） | 上游已交付正式 modelSelection 字段与查询/换模型端点；预校验把 400 挡在本地并给使用方可选列表 |
 | D-v2-11（评审一轮） | 任务登记分片文件 + wx 独占创建 | 单文件读改写并发实测丢 25% | 分片天然消竞争，与信箱同构 |
 | D-v2-12（评审一轮） | setup 端口冲突报错不覆盖 | 开关文件是 ZCode 侧事实源 | 自动重写会让 GUI 配置静默漂移 |
 | D-v2-13（契约对齐） | 所有 :taskId 请求带 workspacePath；seq 回退重置游标 | A 实装：ZCode 重启丢归属表、事件缓冲清空 | 路由兜底由调用方提供归属 |

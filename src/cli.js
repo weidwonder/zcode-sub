@@ -22,10 +22,10 @@ const USAGE = `zcode-sub 用法（把 ZCode 桌面版当子代理）：
 
   zcode-sub setup [--api-port <端口>]
       检查 ZCode 本机任务 API、生成/读取开关文件与 token、打印 MCP 配置步骤。
-  zcode-sub run "<任务>" --cwd <绝对路径> [--name <名>] [--mode <模式>]
+  zcode-sub run "<任务>" --cwd <绝对路径> [--name <名>] [--mode <模式>] [--model <providerId/modelId>] [--thought <档位>]
       在 ZCode 该工作区新建对话执行任务（多任务可并行）；stdout 一行 JSON。默认 yolo（完全访问）。
       --mode 枚举：default/yolo/guarded/plan/edit/acceptEdits/auto/dontAsk/bypassPermissions/autoEdit/build。
-      --model <模型id> 尚未支持（模型选择接口在途，传入会明确报错）。
+      --model/--thought 按模型选择派发（可用值先 zcode-sub models 查；不传用 ZCode 默认或 config 的 defaultModel）。
   zcode-sub send <name> "<消息>" [--steer|--queue]
       补充消息：默认 auto（运行中的去向由会话设置决定，GUI 默认排队；要即时打断用 --steer）；
       --steer 强制引导打断（应答仅为受理，注入结果以事件流为准）、--queue 强制排队；
@@ -40,6 +40,10 @@ const USAGE = `zcode-sub 用法（把 ZCode 桌面版当子代理）：
       在原 ZCode 对话续聊（要求任务空闲；运行中补充用 send）。
   zcode-sub stop <name>
       停止任务生成。
+  zcode-sub models [--cwd <绝对路径>] [--json]
+      列可用模型（providerId/modelId/思考档位/默认标记）；--model 与 --thought 的合法值以此为准。
+  zcode-sub model <name> <providerId/modelId> [--thought <档位>]
+      给已派发任务换模型（下一轮生效；可用值先 models 查）。
   zcode-sub list [--json]
   zcode-sub mcp
       stdio MCP server（reply_to_parent 工具，配进 ZCode 的 mcp.servers）。
@@ -88,6 +92,10 @@ export async function runCli(argv) {
       return cmdResume(home, parseFlagsChecked("resume", rest));
     case "stop":
       return cmdStop(home, parseFlagsChecked("stop", rest));
+    case "models":
+      return cmdModels(home, parseFlagsChecked("models", rest));
+    case "model":
+      return cmdModel(home, parseFlagsChecked("model", rest));
     case "list":
       return cmdList(home, parseFlagsChecked("list", rest));
     case "mcp":
@@ -100,15 +108,17 @@ export async function runCli(argv) {
   }
 }
 
-// 各命令允许的 flags（--model 为模型选择接口预留：进入 cmdRun 后专门报「尚未支持」）
+// 各命令允许的 flags（白名单外一律用法错误）
 const COMMAND_FLAGS = {
   setup: new Set(["api-port"]),
-  run: new Set(["cwd", "name", "mode", "model"]),
+  run: new Set(["cwd", "name", "mode", "model", "thought"]),
   send: new Set(["steer", "queue"]),
   wait: new Set(["timeout"]),
   result: new Set(),
   resume: new Set(),
   stop: new Set(),
+  models: new Set(["cwd", "json"]),
+  model: new Set(["thought"]),
   list: new Set(["json"]),
   mcp: new Set(),
 };
@@ -403,6 +413,76 @@ async function enforceRunningLimit(home, config) {
   }
 }
 
+// ---------- 模型选择（run / model 共用） ----------
+
+// 模型选择解析：--model <providerId/modelId> 与 --thought <reasoningLevel> 合成 create 的
+// modelSelection；优先级 --model/--thought > config.defaultModel；最终无 providerId/modelId
+// 则返回 null（不带，用 ZCode 默认）。格式非法/半截组合直接用法错误。
+function resolveModelSelection(flags, config) {
+  let modelFlag = null; // --model 解析出的 {providerId, modelId}
+  if (flags.model !== undefined) {
+    const parts = typeof flags.model === "string" ? flags.model.split("/") : [];
+    if (parts.length !== 2 || !parts[0] || !parts[1]) {
+      throw usageError("--model 格式应为 <providerId>/<modelId>，例如 glm/glm-4.7；可用列表 zcode-sub models");
+    }
+    modelFlag = { providerId: parts[0], modelId: parts[1] };
+  }
+  const base =
+    config.defaultModel !== null && typeof config.defaultModel === "object" && !Array.isArray(config.defaultModel)
+      ? config.defaultModel
+      : {};
+  const providerId = modelFlag?.providerId ?? base.providerId;
+  const modelId = modelFlag?.modelId ?? base.modelId;
+  const reasoningLevel =
+    typeof flags.thought === "string" && flags.thought ? flags.thought : base?.options?.reasoningLevel;
+  if (flags.thought !== undefined && (!providerId || !modelId)) {
+    throw usageError("--thought 需要 --model 或 config defaultModel 提供模型");
+  }
+  if (!providerId || !modelId) return null;
+  return { providerId, modelId, ...(reasoningLevel ? { options: { reasoningLevel } } : {}) };
+}
+
+// 派发/换模型前按 GET /api/models 预校验：模型不存在或档位非法时给出可选列表（exit 1）
+async function validateModelSelection(config, workspacePath, selection) {
+  const view = await api.listModels(config, workspacePath);
+  const providers = Array.isArray(view?.providers) ? view.providers : [];
+  const provider = providers.find((entry) => entry?.providerId === selection.providerId);
+  const model = provider?.models?.find((entry) => entry?.modelId === selection.modelId);
+  if (!provider || !model) {
+    const available = providers
+      .flatMap((entry) =>
+        (Array.isArray(entry?.models) ? entry.models : []).map((item) => `${entry.providerId}/${item.modelId}`),
+      )
+      .join(", ");
+    const err = new Error(
+      `zcode_model_invalid: 模型 ${selection.providerId}/${selection.modelId} 不在可用列表。可选：${available}`,
+    );
+    err.code = "zcode_model_invalid";
+    err.exitCode = 1;
+    throw err;
+  }
+  const wanted = selection.options?.reasoningLevel;
+  if (wanted !== undefined) {
+    const levels = Array.isArray(model.thoughtLevels) ? model.thoughtLevels : [];
+    if (levels.length === 0) {
+      const err = new Error(
+        `zcode_model_invalid: 模型 ${selection.providerId}/${selection.modelId} 无思考档位，去掉 --thought`,
+      );
+      err.code = "zcode_model_invalid";
+      err.exitCode = 1;
+      throw err;
+    }
+    if (!levels.includes(wanted)) {
+      const err = new Error(
+        `zcode_model_invalid: 思考档位非法：${wanted}，可选 ${levels.join(",")}`,
+      );
+      err.code = "zcode_model_invalid";
+      err.exitCode = 1;
+      throw err;
+    }
+  }
+}
+
 async function cmdRun(home, flags) {
   const taskText = flags._[0];
   const cwd = flags.cwd;
@@ -420,13 +500,16 @@ async function cmdRun(home, flags) {
     }
     modeFlag = flags.mode;
   }
-  // --model 为预留接口：模型选择在途，明确报错而非静默吞掉（usage error，建任务之前拦下）。
-  if (flags.model !== undefined) {
-    throw usageError("--model 尚未支持：模型选择接口在途（等上游交付后启用）；当前按 ZCode 会话默认模型派发，去掉 --model 重试");
-  }
+  // --model 已支持（偏离#17）：resolveModelSelection 见下，格式错误同样是建任务之前拦下。
   const name = typeof flags.name === "string" && flags.name ? flags.name : autoName();
   assertValidName(name);
   const config = requireConfig(home);
+  // 偏离#17：--model/--thought（优先级高于 config.defaultModel）合成 modelSelection；
+  // 非 null 时先按 /api/models 预校验，模型/档位非法在此拦下，不触 createTask。
+  const modelSelection = resolveModelSelection(flags, config);
+  if (modelSelection !== null) {
+    await validateModelSelection(config, cwd, modelSelection);
+  }
   // mode 解析：--mode 显式优先（已校验）；其次 config.defaultMode（合法才用）；否则
   // 默认 yolo（完全访问）。config.defaultMode 非法时忽略并提示，不阻断派发。
   let mode;
@@ -459,6 +542,7 @@ async function cmdRun(home, flags) {
     prompt: wrappedPrompt(name, cwd, taskText),
     title: name,
     mode,
+    modelSelection,
     clientRequestId,
   });
   try {
@@ -572,6 +656,60 @@ async function cmdStop(home, flags) {
   const config = requireConfig(home);
   await api.stopTask(config, task.taskId, task.workspacePath);
   process.stdout.write("✓ 已请求停止\n");
+}
+
+// ---------- models / model ----------
+
+// 模型目录（偏离#18）：--json 出原始 payload；文本表每个模型一行，默认列按 preferred 命中标 *。
+async function cmdModels(home, flags) {
+  const config = requireConfig(home);
+  const payload = await api.listModels(config, typeof flags.cwd === "string" ? flags.cwd : undefined);
+  if (flags.json) {
+    process.stdout.write(`${JSON.stringify(payload, null, 2)}\n`);
+    return;
+  }
+  const preferred =
+    payload?.preferred?.providerId && payload?.preferred?.modelId
+      ? `${payload.preferred.providerId}/${payload.preferred.modelId}`
+      : null;
+  const rows = [["providerId", "modelId", "thoughtLevels", "默认"].join("\t")];
+  for (const provider of Array.isArray(payload?.providers) ? payload.providers : []) {
+    for (const model of Array.isArray(provider?.models) ? provider.models : []) {
+      const levels = Array.isArray(model.thoughtLevels) && model.thoughtLevels.length > 0 ? model.thoughtLevels.join(",") : "-";
+      rows.push(
+        [
+          provider.providerId,
+          model.modelId,
+          levels,
+          preferred === `${provider.providerId}/${model.modelId}` ? "*" : "",
+        ].join("\t"),
+      );
+    }
+  }
+  process.stdout.write(`${rows.join("\n")}\n`);
+}
+
+// 给已派发任务换模型（偏离#19：运行中允许，下一轮生效）。同一个 resolveModelSelection/
+// validateModelSelection：--model 位置参数替代，--thought 与 config.defaultModel 语义不变。
+async function cmdModel(home, flags) {
+  const name = flags._[0];
+  const modelRef = flags._[1];
+  if (!name || !modelRef) {
+    throw usageError("用法：zcode-sub model <name> <providerId/modelId> [--thought <档位>]");
+  }
+  const task = requireTask(home, name);
+  const config = requireConfig(home);
+  const selection = resolveModelSelection({ model: modelRef, thought: flags.thought }, config);
+  // flags._[1] 无斜杠会在 resolveModelSelection 报格式错，selection 实际必非 null；兜底防御。
+  if (selection === null) {
+    throw usageError("--model 格式应为 <providerId>/<modelId>，例如 glm/glm-4.7；可用列表 zcode-sub models");
+  }
+  await validateModelSelection(config, task.workspacePath, selection);
+  // 幂等键与 run/send 同规则；端点侧为独立 model 命名空间（偏离#20）
+  await api.setModel(config, task.taskId, selection, task.workspacePath, "zsub-" + randomUUID());
+  process.stdout.write(
+    `✓ 已切换模型 ${selection.providerId}/${selection.modelId}${selection.options ? `（思考档位 ${selection.options.reasoningLevel}）` : ""}（下一轮生效）\n`,
+  );
 }
 
 // ---------- result ----------

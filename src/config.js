@@ -16,6 +16,14 @@ export function loadConfig(home) {
       // defaultMode：可选字符串（run 的默认派发模式），没有就不带该键（保持旧返回
       // 形状，state.test 的 deepEqual 依赖）；合法性不在这里判——用的时候按枚举校验。
       ...(typeof parsed.defaultMode === "string" ? { defaultMode: parsed.defaultMode } : {}),
+      // defaultModel：可选默认模型选择。形体同 create 的 modelSelection（{providerId,
+      // modelId, options?{reasoningLevel}}），是纯对象（非 null/数组）才带该键；合法性
+      // 在使用处按 /api/models 预校验，这里只管形状。
+      ...(
+        parsed.defaultModel !== null && typeof parsed.defaultModel === "object" && !Array.isArray(parsed.defaultModel)
+          ? { defaultModel: parsed.defaultModel }
+          : {}
+      ),
     };
   } catch {
     return null;

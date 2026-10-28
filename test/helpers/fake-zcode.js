@@ -1,16 +1,19 @@
 import { createServer } from "node:http";
 import { randomUUID } from "node:crypto";
 
-// 假 ZCode 本机任务 API：按契约 v2 模拟（/health、/api/tasks 全家、Host+Bearer+
-// Content-Type+413 校验、每任务事件队列与长轮询、resync 溢出、归属表与游标回退），
-// 供测试驱动 src/api.js。
+// 假 ZCode 本机任务 API：按契约 v2 模拟（/health、/api/tasks 全家、/api/models、
+// /api/tasks/:id/model、Host+Bearer+Content-Type+413 校验、每任务事件队列与长轮询、
+// resync 溢出、归属表与游标回退），供测试驱动 src/api.js。
 // messages 幂等：body.clientRequestId 非空合法（1..200 字符）时按任务缓存首次成功应答
 // （同 202、同 delivery、同 commandId），同键重放直接回缓存；空串/超长 400 bad_client_request_id。
+// 换模型（偏离#19/#20）：POST /api/tasks/:id/model 运行中允许、不发事件，应答 200 {ok:true}；
+// clientRequestId 幂等为独立 model 命名空间（task.modelReqIds），与 messages/create 隔离。
 // 校验顺序对齐 A 侧实装：路由级 404/405 → Host 403 → Bearer 401 → 415 → 413 → 400
-// （POST /api/tasks 另有 mode 白名单 400，先于 409 工作区检查——对齐偏离#7）。
+// （POST /api/tasks 另有 mode 白名单 400 与 modelSelection strict 400，先于 409 工作区
+// 检查——对齐偏离#7）。
 // 控制方法（用例驱动）：createTaskAlreadyRunning / emitEvent / setTaskStatus /
 // setLastAssistantText / settleSteer / createdTasks / calls / simulateResync /
-// forgetOwnership / resetEventSeq / failNextCreatePrompt / setOpUnavailable / stop。
+// forgetOwnership / resetEventSeq / failNextCreatePrompt / setOpUnavailable / setModels / stop。
 
 const MAX_WAIT_MS = 30_000;
 const MAX_BODY_CHARS = 16 * 1024 * 1024; // 413 阈值：16MiB
@@ -30,12 +33,30 @@ const MODE_WHITELIST = new Set([
   "build",
 ]);
 
+// 偏离#17：modelSelection strict 形体——{providerId, modelId, options?{reasoningLevel}}；
+// providerId/modelId 均非空串，options 存在则仅含非空串 reasoningLevel；多余键/空串/错型 → false（400）
+const isStrictModelSelection = (value) => {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) return false;
+  if (typeof value.providerId !== "string" || value.providerId === "") return false;
+  if (typeof value.modelId !== "string" || value.modelId === "") return false;
+  if (Object.keys(value).some((key) => key !== "providerId" && key !== "modelId" && key !== "options")) return false;
+  if ("options" in value) {
+    const options = value.options;
+    if (options === null || typeof options !== "object" || Array.isArray(options)) return false;
+    if (Object.keys(options).some((key) => key !== "reasoningLevel")) return false;
+    if (typeof options.reasoningLevel !== "string" || options.reasoningLevel === "") return false;
+  }
+  return true;
+};
+
 // 路由表：路径级 404/405 在鉴权之前判定
 const ROUTES = [
   { method: "GET", re: /^\/health$/u },
   { method: "POST", re: /^\/api\/tasks$/u },
+  { method: "GET", re: /^\/api\/models$/u },
   { method: "POST", re: /^\/api\/tasks\/([^/]+)\/messages$/u },
   { method: "POST", re: /^\/api\/tasks\/([^/]+)\/stop$/u },
+  { method: "POST", re: /^\/api\/tasks\/([^/]+)\/model$/u },
   { method: "GET", re: /^\/api\/tasks\/([^/]+)\/events$/u },
   { method: "GET", re: /^\/api\/tasks\/([^/]+)$/u },
 ];
@@ -52,6 +73,19 @@ export async function startFakeZcode({ token = "test-token", port: listenPort = 
   let shuttingDown = false;
   let failNextCreatePromptFlag = false; // 一次性：下一次建任务回 201 + warning first_prompt_failed
   let opUnavailableFlag = false; // Host 退出模拟：开启后全部 op 请求结清 503 unavailable_host
+  // 偏离#18 模型目录（可被 setModels 覆盖）；preferred 形体即 modelSelection、可原样回传
+  let modelsPayload = {
+    providers: [
+      { providerId: "glm", displayName: "glm", models: [
+        { modelId: "glm-4.7", displayName: "glm-4.7", thoughtLevels: ["off", "medium", "high"], isDefault: true },
+        { modelId: "glm-4.7-flash", displayName: "glm-4.7-flash", thoughtLevels: [], isDefault: false },
+      ] },
+      { providerId: "openai", displayName: "openai", models: [
+        { modelId: "gpt-5", displayName: "gpt-5", thoughtLevels: ["low", "medium", "high"], isDefault: false },
+      ] },
+    ],
+    preferred: { providerId: "glm", modelId: "glm-4.7" },
+  };
 
   const newTask = (workspacePath, title) => ({
     taskId: randomUUID(),
@@ -65,6 +99,7 @@ export async function startFakeZcode({ token = "test-token", port: listenPort = 
     events: [],
     pendingSteerCommandId: null, // steer 受理待决：settleSteer 前由 messages 端点登记
     reqIds: new Map(), // messages 的 clientRequestId → 首次成功应答缓存（幂等去重）
+    modelReqIds: new Map(), // 换模型的 clientRequestId 幂等（独立 model 命名空间，偏离#20）
     waiters: new Set(), // 挂起中的长轮询唤醒器
   });
 
@@ -208,6 +243,11 @@ export async function startFakeZcode({ token = "test-token", port: listenPort = 
           json(response, 400, { error: "bad_mode" });
           return;
         }
+        // 偏离#17：modelSelection 非 undefined 时按 strict 形体校验（同 /model 端点）
+        if (body.modelSelection !== undefined && !isStrictModelSelection(body.modelSelection)) {
+          json(response, 400, { error: "bad_model_selection" });
+          return;
+        }
         // 未打开的工作区（远端工作区同码）→ 409
         if (body.workspacePath === "/workspace-closed" || body.workspacePath === "/workspace-remote") {
           json(response, 409, { error: "workspace_not_open" });
@@ -221,6 +261,17 @@ export async function startFakeZcode({ token = "test-token", port: listenPort = 
         ownership.set(task.taskId, task.workspacePath); // createTask 登记归属
         if (reqId !== null) createReqIds.set(reqId, task.taskId);
         json(response, 201, { taskId: task.taskId, ...(firstPromptFailed ? { warning: "first_prompt_failed" } : {}) });
+        return;
+      }
+
+      // 偏离#18：模型目录；鉴权已过（记入 calls）。仍按 workspace 语义路由：未打开的
+      // 工作区 409 workspace_not_open（与其它端点 409 语义一致）
+      if (method === "GET" && pathname === "/api/models") {
+        if (requestedWs === "/workspace-closed") {
+          json(response, 409, { error: "workspace_not_open" });
+          return;
+        }
+        json(response, 200, modelsPayload);
         return;
       }
 
@@ -270,6 +321,32 @@ export async function startFakeZcode({ token = "test-token", port: listenPort = 
         const reply = { delivery: "sent" };
         if (reqId !== null) task.reqIds.set(reqId, reply);
         json(response, 202, reply);
+        return;
+      }
+
+      if (pathname.endsWith("/model")) {
+        // 偏离#19：运行中允许换模型；校验顺序 = 归属 → 任务存在 → modelSelection strict
+        if (!ownershipGuard(response, taskId, body.workspacePath)) return;
+        const task = tasks.get(taskId);
+        if (!task) {
+          taskNotFound(response);
+          return;
+        }
+        if (!isStrictModelSelection(body.modelSelection)) {
+          json(response, 400, { error: "bad_model_selection" });
+          return;
+        }
+        // 偏离#20：clientRequestId 幂等为独立 model 命名空间（与 messages/create 隔离）；
+        // 命中直接 200 {ok:true}，否则处理后缓存。不发任何事件。
+        const reqId =
+          typeof body.clientRequestId === "string" && body.clientRequestId !== "" ? body.clientRequestId : null;
+        if (reqId !== null && task.modelReqIds.has(reqId)) {
+          json(response, 200, { ok: true });
+          return;
+        }
+        task.updatedAt = Date.now();
+        if (reqId !== null) task.modelReqIds.set(reqId, true);
+        json(response, 200, { ok: true });
         return;
       }
 
@@ -437,6 +514,10 @@ export async function startFakeZcode({ token = "test-token", port: listenPort = 
     // 503 {error:"unavailable_host"}；关闭后恢复正常
     setOpUnavailable(enabled) {
       opUnavailableFlag = enabled === true;
+    },
+    // 覆盖 GET /api/models 的返回（偏离#18），供用例替换默认模型目录数据
+    setModels(payload) {
+      modelsPayload = payload;
     },
     stop() {
       shuttingDown = true;

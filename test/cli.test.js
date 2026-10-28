@@ -27,6 +27,7 @@ let capHomeA; // 并发上限：默认上限 4 的场景
 let capHomeB; // 并发上限：ZCODE_SUB_MAX_RUNNING=2 的场景
 let ghostHome; // GUI 删除任务（刷新 404）释放并发额度的场景
 let modeHome; // config.defaultMode（合法/非法）与 --mode 覆盖的场景（独立 config，不污染共享 home）
+let modelsHome; // config.defaultModel（默认模型选择）与 --model 覆盖的场景（独立 config）
 
 // fake Zcode 跑在本测试进程内，必须用异步 spawn——spawnSync 会冻结事件循环，
 // 让 fake 无法响应 CLI 子进程的请求。
@@ -80,6 +81,8 @@ before(async () => {
   saveConfig(ghostHome, { apiPort: fake.port, token: TOKEN });
   modeHome = mkdtempSync(join(tmpdir(), "zcode-sub-mode-"));
   saveConfig(modeHome, { apiPort: fake.port, token: TOKEN });
+  modelsHome = mkdtempSync(join(tmpdir(), "zcode-sub-models-"));
+  saveConfig(modelsHome, { apiPort: fake.port, token: TOKEN });
 });
 
 after(async () => {
@@ -95,6 +98,7 @@ after(async () => {
     capHomeB,
     ghostHome,
     modeHome,
+    modelsHome,
   ]) {
     rmSync(dir, { recursive: true, force: true });
   }
@@ -442,13 +446,183 @@ test("run：mode 解析——默认 yolo；--mode plan 覆盖；--mode 非法 ex
   );
 });
 
-test("run：--model 明确报尚未支持（exit 1），在建任务之前拦下不触上游", async () => {
+test("run：--model/--thought 合成 modelSelection 进 create body（偏离#17）", async () => {
+  const result = await runCli([
+    "run",
+    "带模型参数的任务",
+    "--cwd",
+    "/tmp/model-ok",
+    "--name",
+    "model-ok",
+    "--model",
+    "glm/glm-4.7",
+    "--thought",
+    "high",
+  ]);
+  assert.equal(result.status, 0, result.stderr);
+  const call = fake.calls.find(
+    (entry) => entry.method === "POST" && entry.url.split("?")[0] === "/api/tasks" && entry.body?.title === "model-ok",
+  );
+  assert.ok(call, "应有 model-ok 的建任务请求");
+  assert.deepEqual(call.body.modelSelection, {
+    providerId: "glm",
+    modelId: "glm-4.7",
+    options: { reasoningLevel: "high" },
+  });
+  settle("model-ok");
+});
+
+test("run：--model 无斜杠 → exit 1 用法错误（--model 格式），不触上游", async () => {
   const callsBefore = fake.calls.length;
-  const result = await runCli(["run", "带模型参数的任务", "--cwd", "/tmp", "--model", "glm-5"]);
+  const result = await runCli(["run", "坏格式任务", "--cwd", "/tmp/model-badfmt", "--name", "model-badfmt", "--model", "glm-glm-4.7"]);
   assert.equal(result.status, 1);
-  assert.match(result.stderr, /--model 尚未支持/u);
-  // 报错发生在任何 API 调用之前：不建任务、不留孤儿对话（--cwd /tmp 即可，不依赖真实工作区）
-  assert.equal(fake.calls.length, callsBefore, "不应产生任何新的 API 调用");
+  assert.match(result.stderr, /--model 格式/u);
+  assert.equal(fake.calls.length, callsBefore, "格式错误在建任务之前拦下，不产生任何 API 调用");
+});
+
+test("run：--model 不在可用列表 → exit 1 zcode_model_invalid，stderr 给可选列表", async () => {
+  const result = await runCli(["run", "不存在模型任务", "--cwd", "/tmp/model-miss", "--name", "model-miss", "--model", "openai/gpt-x"]);
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /zcode_model_invalid/u);
+  assert.match(result.stderr, /不在可用列表/u);
+  assert.ok(result.stderr.includes("glm/glm-4.7"), `stderr 应含可选模型：${result.stderr}`);
+  assert.ok(
+    !fake.calls.some(
+      (entry) => entry.method === "POST" && entry.url.split("?")[0] === "/api/tasks" && entry.body?.title === "model-miss",
+    ),
+    "预校验失败不建任务",
+  );
+});
+
+test("run：只给 --thought 无 --model 且 config 无 defaultModel → exit 1（--thought 需要 --model 或 defaultModel）", async () => {
+  const result = await runCli(["run", "光档位任务", "--cwd", "/tmp/model-thought", "--name", "model-thought", "--thought", "high"]);
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /--thought 需要/u);
+});
+
+test("run：--thought 档位不在该模型 thoughtLevels → exit 1 思考档位非法并列出可选", async () => {
+  const result = await runCli([
+    "run",
+    "坏档位任务",
+    "--cwd",
+    "/tmp/model-turbo",
+    "--name",
+    "model-turbo",
+    "--model",
+    "glm/glm-4.7",
+    "--thought",
+    "turbo",
+  ]);
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /思考档位非法/u);
+  assert.ok(result.stderr.includes("off,medium,high"), `stderr 应含可选档位（逗号连接）：${result.stderr}`);
+});
+
+test("run：模型无思考档位（thoughtLevels 空数组）却给 --thought → exit 1 无思考档位", async () => {
+  const result = await runCli([
+    "run",
+    "无档位模型任务",
+    "--cwd",
+    "/tmp/model-flash",
+    "--name",
+    "model-flash",
+    "--model",
+    "glm/glm-4.7-flash",
+    "--thought",
+    "high",
+  ]);
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /无思考档位/u);
+  assert.match(result.stderr, /去掉 --thought/u);
+});
+
+test("run：config.defaultModel 兜底；--model 覆盖 provider/model 但 thought 沿用配置", async () => {
+  const modelsEnv = { ZCODE_SUB_HOME: modelsHome };
+  const selection = { providerId: "glm", modelId: "glm-4.7", options: { reasoningLevel: "medium" } };
+  saveConfig(modelsHome, { apiPort: fake.port, token: TOKEN, defaultModel: selection });
+
+  // 不带 --model：defaultModel 原样合成 modelSelection
+  const plain = await runCli(["run", "配置默认模型", "--cwd", "/tmp/cfg-model-a", "--name", "cfg-model-a"], modelsEnv);
+  assert.equal(plain.status, 0, plain.stderr);
+  const plainCall = fake.calls.find(
+    (entry) => entry.method === "POST" && entry.url.split("?")[0] === "/api/tasks" && entry.body?.title === "cfg-model-a",
+  );
+  assert.ok(plainCall, "应有 cfg-model-a 的建任务请求");
+  assert.deepEqual(plainCall.body.modelSelection, selection);
+  settle("cfg-model-a");
+
+  // --model 只覆盖 provider/model，--thought 未给时 reasoningLevel 沿用配置
+  const override = await runCli(
+    ["run", "覆盖模型沿用档位", "--cwd", "/tmp/cfg-model-b", "--name", "cfg-model-b", "--model", "openai/gpt-5"],
+    modelsEnv,
+  );
+  assert.equal(override.status, 0, override.stderr);
+  const overrideCall = fake.calls.find(
+    (entry) => entry.method === "POST" && entry.url.split("?")[0] === "/api/tasks" && entry.body?.title === "cfg-model-b",
+  );
+  assert.ok(overrideCall, "应有 cfg-model-b 的建任务请求");
+  assert.deepEqual(overrideCall.body.modelSelection, {
+    providerId: "openai",
+    modelId: "gpt-5",
+    options: { reasoningLevel: "medium" },
+  });
+  settle("cfg-model-b");
+});
+
+test("models：文本表含表头/模型/默认标记；--json 输出可解析", async () => {
+  const table = await runCli(["models"]);
+  assert.equal(table.status, 0, table.stderr);
+  assert.ok(table.stdout.split("\n")[0].startsWith("providerId\tmodelId\t"), `表头应为 providerId/modelId：${table.stdout.split("\n")[0]}`);
+  assert.ok(table.stdout.includes("glm-4.7"), `应含 glm-4.7：${table.stdout}`);
+  assert.ok(table.stdout.includes("*"), `默认行应标 *：${table.stdout}`);
+
+  const json = await runCli(["models", "--json"]);
+  assert.equal(json.status, 0, json.stderr);
+  const payload = JSON.parse(json.stdout);
+  assert.equal(payload.providers[0].providerId, "glm");
+  assert.equal(payload.preferred.providerId, "glm");
+});
+
+test("model：换模型——预校验拦下不存在的模型；合法值切换成功并带 zsub- 幂等键", async () => {
+  await dispatchTask("mdl-1");
+
+  const invalid = await runCli(["model", "mdl-1", "glm/gpt-x"]);
+  assert.equal(invalid.status, 1);
+  assert.match(invalid.stderr, /不在可用列表/u);
+
+  const ok = await runCli(["model", "mdl-1", "openai/gpt-5", "--thought", "low"]);
+  assert.equal(ok.status, 0, ok.stderr);
+  assert.ok(ok.stdout.includes("已切换模型 openai/gpt-5"), `stdout 应含切换成功：${ok.stdout}`);
+  assert.ok(ok.stdout.includes("（思考档位 low）"), `stdout 应含档位：${ok.stdout}`);
+  assert.ok(ok.stdout.includes("（下一轮生效）"), `stdout 应含生效说明：${ok.stdout}`);
+
+  const post = fake.calls.at(-1);
+  assert.equal(post.method, "POST");
+  assert.equal(post.url.split("?")[0].endsWith("/model"), true);
+  assert.deepEqual(post.body.modelSelection, { providerId: "openai", modelId: "gpt-5", options: { reasoningLevel: "low" } });
+  assert.match(post.body.clientRequestId, /^zsub-/u);
+  settle("mdl-1");
+});
+
+test("model：缺参数 → exit 1 用法错误", async () => {
+  const result = await runCli(["model"]);
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /用法：zcode-sub model <name> <providerId\/modelId>/u);
+});
+
+test("bin 错误前缀去重：message 已含 code 前缀时不再重复", async () => {
+  const result = await runCli(["result", "no-such-task"]);
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /zcode_task_not_found/u);
+  assert.ok(
+    !result.stderr.includes("zcode_task_not_found: zcode_task_not_found"),
+    `不应出现双前缀：${result.stderr}`,
+  );
+  assert.equal(
+    result.stderr.split("zcode_task_not_found").length - 1,
+    1,
+    `zcode_task_not_found 恰好出现一次：${result.stderr}`,
+  );
 });
 
 test("run：config.defaultMode=plan 生效；--mode 优先于 config；非法 defaultMode 忽略按 yolo 并提示", async () => {
