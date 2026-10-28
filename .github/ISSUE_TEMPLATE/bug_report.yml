@@ -1,0 +1,64 @@
+name: Bug 报告 / Bug report
+description: zcode-sub 或 patch/ 工具链的行为与文档不符 / zcode-sub or the patch/ toolchain misbehaves
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        安全问题请不要在这里提，按 [SECURITY.md](https://github.com/weidwonder/zcode-sub/blob/main/SECURITY.md) 私下报告。ZCode 本身的问题请报给上游 [zai-org/ZCode](https://github.com/zai-org/ZCode)。
+        Security issues: do not file here — report privately per SECURITY.md. Problems with ZCode itself belong upstream.
+  - type: input
+    id: zcode-version
+    attributes:
+      label: ZCode 版本 / ZCode version
+      description: ZCode 的「关于」页里的版本号，并注明是 ZCode Preview（补丁版）还是正式版 / Version from ZCode's About page; say whether it is ZCode Preview (patched) or the official app
+      placeholder: "ZCode Preview 3.16.2"
+    validations:
+      required: true
+  - type: input
+    id: zcode-sub-version
+    attributes:
+      label: zcode-sub --version
+      placeholder: "zcode-sub 0.2.0"
+    validations:
+      required: true
+  - type: input
+    id: macos-version
+    attributes:
+      label: macOS 版本 / macOS version
+      description: 「关于本机」或 `sw_vers` / From "About This Mac" or `sw_vers`
+      placeholder: "macOS 15.x (arm64)"
+    validations:
+      required: true
+  - type: textarea
+    id: setup-output
+    attributes:
+      label: zcode-sub setup 输出 / zcode-sub setup output
+      description: 粘贴前把 token 打码（只留前 4 位）/ Redact the token before pasting (keep at most the first 4 characters)
+      render: text
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: 复现步骤 / Steps to reproduce
+      description: 涉及的命令与退出码；可设 `ZCODE_SUB_DEBUG=1` 重跑，附 `~/.zcode-sub/debug.log` 相关段落（附前再自查一遍）/ Commands and exit codes; optionally rerun with `ZCODE_SUB_DEBUG=1` and attach the relevant part of `~/.zcode-sub/debug.log`
+      placeholder: |
+        1. zcode-sub run "..." --cwd /abs/path --name demo
+        2. zcode-sub wait demo
+        3. ...
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: 期望结果 / Expected behavior
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: 实际结果 / Actual behavior
+      description: 含完整报错与退出码 / Include the full error and exit code
+    validations:
+      required: true

@@ -29,6 +29,11 @@
 
 ## 流程一：首次替换（推荐 Preview 并存）
 
+先准备带补丁的 ZCode 源码（`build-desktop.sh` 只构建传入的目录，不会自己打补丁），二选一：
+
+- **直接用 fork 分支**：`git clone -b feat/local-task-api https://github.com/weidwonder/ZCode <ZCode 源码目录>`——上游 3.16.2（`3c5b2276`）加 `patch/series` 的三个补丁提交。
+- **在上游源码上打补丁**：`git clone https://github.com/zai-org/ZCode <ZCode 源码目录>`，再 `git -C <ZCode 源码目录> fetch https://github.com/weidwonder/ZCode feat/local-task-api` 取到补丁提交，然后跑流程二第 1 步的 `patch/sync-upstream.sh <ZCode 源码目录>`（它要求 `origin` 指向上游）。
+
 ```bash
 cd <zcode-sub 仓库目录>
 # 0. 备份数据（约 1 GB 会话库在线备份，几分钟）
@@ -37,7 +42,8 @@ patch/backup-zcode-data.sh
 patch/build-desktop.sh <ZCode 源码目录>
 # 2. 安装（Preview 产物装到 /Applications/ZCode Preview.app，不动正式版）
 patch/install-desktop.sh '<ZCode 源码目录>/packages/desktop/dist/mac-arm64/ZCode Preview.app'
-# 3. 打开「ZCode Preview」验证：应免登录（凭据共享）、历史任务在、Webhook Bot 功能可用
+# 3. 打开「ZCode Preview」验证：应免登录（凭据共享）、历史任务在；
+#    再跑 zcode-sub setup（首次写开关文件后要重启 ZCode Preview 再跑一次），看到「✓ 本机任务 API 正常」
 ```
 
 要彻底替代正式版（不只并存）时：把正式版也移到备份区——命令与上面 install 的备份同款

@@ -6,7 +6,7 @@
 - 上游与当前版本：github.com/zai-org/ZCode @ 3.16.2（本地克隆 `/Users/weidwonder/projects/ZCode`，origin/main 3c5b2276）；桥接 CLI 依赖其「本机任务 API」补丁（契约 v2，权威文档为补丁里的 `docs/local-task-api.md`）
 - 确认时间：2026-10-28（桥接侧按补丁最终形状 d444427e 对齐复核：workspace_open_blocked、invalid_model_selection、defaultThoughtLevel 已交付）
 
-**上游快照状态（本仓各文档里具体 SHA / 版本号 / 服务端状态以本行为准）**：origin/main = 3c5b2276（3.16.2，2026-10-20 sync）；装机现状（2026-10-28 真机安装后）：/Applications 为补丁版 ZCode Preview 3.16.2（dev.zcode.app.preview），官方 3.16.3（dev.zcode.app，官方签名）已由用户移到 zcode-backups/apps/ZCode-3.16.3-official.app 保存；生产 `/api/v1/client/configs` 于 2026-10-27 实测未下发 `forceUpdate` 门槛（服务端随时可变）；补丁开发分支 `feat/local-bot-webhook`（含 v1 webhook ingress 引入 + revert 对冲对与 local-dw 过程文档提交）；从上游 main 整理出的三个干净净提交在 `feat/local-task-api` 分支（同为上游 PR 内容），已固化进 `patch/series`。
+**上游快照状态（本仓各文档里具体 SHA / 版本号 / 服务端状态以本行为准）**：origin/main = 3c5b2276（3.16.2，2026-10-20 sync）；装机现状（2026-10-28 真机安装后）：/Applications 为补丁版 ZCode Preview 3.16.2（dev.zcode.app.preview），官方 3.16.3（dev.zcode.app，官方签名）已由用户移到 zcode-backups/apps/ZCode-3.16.3-official.app 保存；生产 `/api/v1/client/configs` 于 2026-10-27 实测未下发 `forceUpdate` 门槛（服务端随时可变）；补丁开发分支 `feat/local-bot-webhook`（含 v1 webhook ingress 引入 + revert 对冲对与 local-dw 过程文档提交）；从上游 main 整理出的三个干净净提交在 `feat/local-task-api` 分支，已固化进 `patch/series`；该分支公开在 fork github.com/weidwonder/ZCode（2026-10-28 核实：比上游 3c5b2276 领先 3、落后 0）。上游 zai-org/ZCode 不接受外部 PR，补丁只在 fork 分支维护。
 
 ## 用到的部分
 

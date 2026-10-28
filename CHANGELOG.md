@@ -21,6 +21,7 @@
 
 ### 新增
 
+- 社区健康文件：`SECURITY.md`（经 GitHub private vulnerability reporting 私下报告；范围含 token 处理、本机回环 API、开关文件权限、默认 yolo，ZCode 本身问题指向上游）、`CODE_OF_CONDUCT.md`（Contributor Covenant 2.1 原文，执行联系人 weidwonder@gmail.com）、`.github/ISSUE_TEMPLATE/bug_report.yml`（必填 ZCode 版本、`zcode-sub --version`、打码后的 `zcode-sub setup` 输出、macOS 版本、复现步骤、期望/实际）与 `config.yml`（安全问题指向私下报告）；`CONTRIBUTING.md` 补行为准则与安全报告指引。
 - `zcode-sub` v0.2.0：契约 v2 全套——CLI（setup/run/send/wait/result/resume/stop/list/mcp）、API 客户端（`src/api.js`：createTask/sendMessage/stopTask/getTask/getEvents 长轮询）、多任务 name→taskId 映射、MCP `reply_to_parent` 直写信箱、假 ZCode v2 全链路测试、真机冒烟脚本 v2、Claude Code Skill 与 README。
 - 迁移 checksum 门检工具 `patch/verify-migration-checksums.mjs`（上游更新后替换安装前重跑，账本超集或 checksum 漂移即非零退出）。
 - ZCode 补丁版工具链五脚本（`patch/backup-zcode-data.sh`、`build-desktop.sh`、`install-desktop.sh`、`rollback-desktop.sh`、`sync-upstream.sh`）与流程文档 `patch/README.md`——数据保全、mac arm64 构建（Preview/production 双身份）、安装替换与回滚、上游跟随。
@@ -28,6 +29,7 @@
 
 ### 变更
 
+- README（中英两份）重写：首屏改为副标题 +「为什么用它」（首条为把重活交给 ZCode 绑定的模型、分担 Claude 用量）+ 白话版工作原理，内部术语首次出现给解释；安装改为完整路径（clone fork 分支 `weidwonder/ZCode@feat/local-task-api` → 备份 → 构建 → 安装 ZCode Preview → `zcode-sub setup` 看到「✓ 本机任务 API 正常」），删去「计划提交上游」，改为如实说明补丁维护在 fork 分支；新增「运行中改向」（`--steer` / `--interrupt` 最小示例与对应事件）、退出码表（码/含义/怎么办）、「限制」、「问题与建议」小节；`## 需求`、`## 架构与边界` 两个锚点标题保留。
 - 并发派发上限：同时非终态任务数默认 4（`ZCODE_SUB_MAX_RUNNING` 调整，尽力检查——多进程同时派发瞬间可能超出），超限 `zcode_too_many_running`（退出码 8）；并发额度刷新遇 404（任务已在 GUI 删除）时本地置 `error` 终态自动释放额度。
 - 任务登记由单文件 tasks.json 改为每任务分片 `tasks/<name>.json`（`wx` 独占创建防同名竞态；并发丢登记修复；损坏分片重登记时备份 `.corrupt-<ts>` 后覆盖）。
 - 所有按 taskId 的 API 请求携带 workspacePath（ZCode 重启丢归属表时据此路由）；wait 处理事件序号回退。
@@ -50,6 +52,8 @@
 
 ### 修复
 
+- `zcode-sub --help` 环境变量列表补上 `ZCODE_SUB_INTERRUPT_TIMEOUT_MS`（`send --interrupt` 等任务回空闲的上限，默认 15000 毫秒），与 README 配置表一致。
+- `patch/README.md` 流程一的验证步骤改为用 `zcode-sub setup` 看到「✓ 本机任务 API 正常」（原写「Webhook Bot 功能可用」，对应已删除的 v1 传输层）；流程一开头补「源码来源」：clone fork 分支，或在上游源码上 fetch 补丁提交后用 `sync-upstream.sh` 打补丁。`patch/series` 注释与 ZCode 依赖声明里的「上游 PR」说法同步改为补丁维护在 fork 分支。
 - POST 请求不再自动重试（除上条带幂等键的 createTask）：写入失败即报 `zcode_api_unreachable` 并提示「任务可能已创建，先用 list / GUI 核对」（防双建任务）；GET 保留一次重试。
 - `getEvents` 对 HTTP ≥400 统一抛 `zcode_send_failed`（此前 404 以 200 语义 payload 返回）。
 - 新增 `ZCODE_SUB_DEBUG=1` 请求/响应摘要日志（debug.log，不含 token 与 prompt 正文）。

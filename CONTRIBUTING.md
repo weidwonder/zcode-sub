@@ -1,6 +1,6 @@
 # 贡献指南
 
-感谢关注 zcode-sub。仓库很小，参与门槛也低。
+感谢关注 zcode-sub。仓库很小，参与门槛也低。参与本项目即同意遵守[行为准则](CODE_OF_CONDUCT.md)；安全问题按 [SECURITY.md](SECURITY.md) 私下报告，不要开公开 issue。
 
 ## 报问题
 
