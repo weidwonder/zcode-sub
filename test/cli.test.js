@@ -725,12 +725,30 @@ test("未指定 --thought 用默认档位：max 优先、defaultThoughtLevel 回
   settle("def-flash");
 });
 
-test("models：文本表含表头/模型/默认标记；--json 输出可解析", async () => {
+test("models：文本表含表头/默认档位列/默认标记；--json 输出可解析", async () => {
   const table = await runCli(["models"]);
   assert.equal(table.status, 0, table.stderr);
-  assert.ok(table.stdout.split("\n")[0].startsWith("providerId\tmodelId\t"), `表头应为 providerId/modelId：${table.stdout.split("\n")[0]}`);
+  const header = table.stdout.split("\n")[0];
+  assert.ok(header.startsWith("providerId\tmodelId\t"), `表头应为 providerId/modelId 开头：${header}`);
+  assert.ok(header.includes("默认档位"), `表头应含默认档位列：${header}`);
+  assert.ok(header.endsWith("\t默认"), `表头末列应为「默认」：${header}`);
+
+  // glm-5.3 有 defaultThoughtLevel=max → 默认档位列显 max；非 preferred，默认列空
+  const glm53Line = table.stdout.split("\n").find((line) => line.startsWith("glm\tglm-5.3\t"));
+  assert.ok(glm53Line, `应含 glm-5.3 行：${table.stdout}`);
+  const glm53Cols = glm53Line.split("\t");
+  assert.equal(glm53Cols.length, 5, `每行应为 5 列：${glm53Line}`);
+  assert.equal(glm53Cols[3], "max", "glm-5.3 默认档位列应显 defaultThoughtLevel=max");
+  assert.equal(glm53Cols[4], "", "glm-5.3 非 preferred，默认列应空");
+
+  // glm-4.7 无 defaultThoughtLevel → 显 -；preferred 判定不受新列影响，仍标 *
+  const glm47Line = table.stdout.split("\n").find((line) => line.startsWith("glm\tglm-4.7\t"));
+  assert.ok(glm47Line, `应含 glm-4.7 行：${table.stdout}`);
+  const glm47Cols = glm47Line.split("\t");
+  assert.equal(glm47Cols.length, 5);
+  assert.equal(glm47Cols[3], "-", "无 defaultThoughtLevel 应显 -");
+  assert.equal(glm47Cols[4], "*", "preferred 仍按默认列标 *");
   assert.ok(table.stdout.includes("glm-4.7"), `应含 glm-4.7：${table.stdout}`);
-  assert.ok(table.stdout.includes("*"), `默认行应标 *：${table.stdout}`);
 
   const json = await runCli(["models", "--json"]);
   assert.equal(json.status, 0, json.stderr);
@@ -903,11 +921,54 @@ test("run：--model 预校验遇工作区未打开（409）→ 同为 exit 3（�
   );
 });
 
-test("run：工作区打开超时（409 workspace_open_timeout）→ exit 3 同 code，stderr 含超时文案", async () => {
+test("run：工作区打开超时（409 workspace_open_timeout）→ exit 3 同 code，stderr 含超时文案（可直接重试）", async () => {
   const result = await runCli(["run", "打开超时任务", "--cwd", "/workspace-open-timeout", "--name", "ws-timeout"]);
   assert.equal(result.status, 3);
   assert.match(result.stderr, /zcode_workspace_not_open/u);
   assert.match(result.stderr, /打开该工作区超时/u);
+  assert.match(result.stderr, /可直接重试/u);
+});
+
+test("run：工作区打开被禁（409 workspace_open_blocked）→ exit 3 含禁止打开工作区", async () => {
+  const result = await runCli(["run", "打开被禁任务", "--cwd", "/workspace-open-blocked", "--name", "ws-blocked"]);
+  assert.equal(result.status, 3);
+  assert.match(result.stderr, /zcode_workspace_not_open/u);
+  assert.match(result.stderr, /禁止打开工作区/u);
+});
+
+test("工作区族错误全命令一致映射：op 端点 409 workspace_open_blocked → send/stop/model/wait/result 均 exit 3", async () => {
+  await dispatchTask("ws-map");
+  fake.setOpWorkspaceError("workspace_open_blocked");
+  try {
+    // send → POST /:id/messages 409 → exit 3
+    const send = await runCli(["send", "ws-map", "x"]);
+    assert.equal(send.status, 3, send.stderr);
+    assert.match(send.stderr, /zcode_workspace_not_open/u);
+    assert.match(send.stderr, /禁止打开工作区/u);
+
+    // stop → POST /:id/stop 409 → exit 3
+    const stop = await runCli(["stop", "ws-map"]);
+    assert.equal(stop.status, 3, stop.stderr);
+    assert.match(stop.stderr, /禁止打开工作区/u);
+
+    // model → 预校验走 /api/models（不受开关影响）→ POST /:id/model 409 → exit 3
+    const model = await runCli(["model", "ws-map", "glm/glm-4.7"]);
+    assert.equal(model.status, 3, model.stderr);
+    assert.match(model.stderr, /禁止打开工作区/u);
+
+    // wait → GET /:id/events 409 先于 TIMEOUT 抛出（不给 exit 2）→ exit 3
+    const wait = await runCli(["wait", "ws-map", "--timeout", "3"]);
+    assert.equal(wait.status, 3, wait.stderr);
+    assert.match(wait.stderr, /禁止打开工作区/u);
+
+    // result → GET /:id 409 → exit 3
+    const result = await runCli(["result", "ws-map"]);
+    assert.equal(result.status, 3, result.stderr);
+    assert.match(result.stderr, /禁止打开工作区/u);
+  } finally {
+    fake.setOpWorkspaceError(null); // 归位，不串扰后续用例
+  }
+  settle("ws-map");
 });
 
 test("run：工作区路径非法（400 workspace_path_invalid）→ exit 1 zcode_workspace_path_invalid", async () => {

@@ -32,7 +32,7 @@ wait 输出判读：
 | `[turn.completed]` / `[turn.failed]` | 该轮终了 → result 取全文（终态以 result 的状态为准） |
 | `[reply] <文本>` | 子代理主动汇报 → 处理后再 wait；需要答复时用 send <name> "<答复>" |
 | `[permission.requested]` | 告知用户在 ZCode GUI 审批该权限，等处理后再 wait（权限不经本工具批） |
-| `[input.steered] 你的引导已受理（commandId=…）` | 你的 `--steer` 被受理（该事件受上游已知问题影响可能不出现——引导结果只看 steer.injected / steer.fellBack） |
+| `[input.steered] 你的引导已受理（commandId=…）` | 你的 `--steer` 被受理（旧版 ZCode 可能不出现该事件——引导结果只看 steer.injected / steer.fellBack） |
 | `[input.steered] 来自 GUI 侧的引导（commandId=…）` | 用户在 GUI 手动引导同一任务——不是你的操作，别误当结果 |
 | `[steer.injected]` | 引导生效 |
 | `[steer.fellBack]` | 引导被降级/拒绝——先看后续有没有 input.queued（已转排队就不重发）；没有再用 send --queue 重发 |

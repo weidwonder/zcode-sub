@@ -43,7 +43,7 @@ const USAGE = `zcode-sub 用法（把 ZCode 桌面版当子代理）：
   zcode-sub stop <name>
       停止任务生成。
   zcode-sub models [--cwd <绝对路径>] [--json]
-      列可用模型（providerId/modelId/思考档位/默认标记）；--model 与 --thought 的合法值以此为准。
+      列可用模型（providerId/modelId/思考档位/默认档位/默认标记）；--model 与 --thought 的合法值以此为准。
   zcode-sub model <name> <providerId/modelId> [--thought <档位>]
       给已派发任务换模型（下一轮生效；可用值先 models 查）。
   zcode-sub list [--json]
@@ -725,7 +725,8 @@ async function cmdStop(home, flags) {
 
 // ---------- models / model ----------
 
-// 模型目录（偏离#18）：--json 出原始 payload；文本表每个模型一行，默认列按 preferred 命中标 *。
+// 模型目录（偏离#18）：--json 出原始 payload；文本表每个模型一行，默认档位列显示
+// defaultThoughtLevel（无则 -），默认列按 preferred 命中标 *。
 async function cmdModels(home, flags) {
   const config = requireConfig(home);
   const payload = await api.listModels(config, typeof flags.cwd === "string" ? flags.cwd : undefined);
@@ -737,7 +738,7 @@ async function cmdModels(home, flags) {
     payload?.preferred?.providerId && payload?.preferred?.modelId
       ? `${payload.preferred.providerId}/${payload.preferred.modelId}`
       : null;
-  const rows = [["providerId", "modelId", "thoughtLevels", "默认"].join("\t")];
+  const rows = [["providerId", "modelId", "thoughtLevels", "默认档位", "默认"].join("\t")];
   for (const provider of Array.isArray(payload?.providers) ? payload.providers : []) {
     for (const model of Array.isArray(provider?.models) ? provider.models : []) {
       const levels = Array.isArray(model.thoughtLevels) && model.thoughtLevels.length > 0 ? model.thoughtLevels.join(",") : "-";
@@ -746,6 +747,7 @@ async function cmdModels(home, flags) {
           provider.providerId,
           model.modelId,
           levels,
+          typeof model.defaultThoughtLevel === "string" ? model.defaultThoughtLevel : "-",
           preferred === `${provider.providerId}/${model.modelId}` ? "*" : "",
         ].join("\t"),
       );

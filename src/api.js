@@ -16,6 +16,41 @@ export class ApiError extends Error {
   }
 }
 
+// 工作区族错误统一分流（A 侧工作区自动打开后所有 op 都可能返回）：
+// 409 workspace_not_open / workspace_open_timeout / workspace_open_blocked → exit 3；
+// 400 workspace_path_invalid → exit 1。不适用返回 undefined，调用方走各自兜底。
+function workspaceApiError(status, payload) {
+  if (status === 409 && payload?.error === "workspace_not_open") {
+    return new ApiError(
+      "zcode_workspace_not_open",
+      "zcode_workspace_not_open: 该工作区未在 ZCode 中打开。先在 ZCode 里打开该工作区再派发。",
+      { exitCode: 3, status },
+    );
+  }
+  if (status === 409 && payload?.error === "workspace_open_timeout") {
+    return new ApiError(
+      "zcode_workspace_not_open",
+      "zcode_workspace_not_open: ZCode 打开该工作区超时（打开请求可能仍在进行，可直接重试）；重试仍超时就先在 ZCode 手动打开。",
+      { exitCode: 3, status },
+    );
+  }
+  if (status === 409 && payload?.error === "workspace_open_blocked") {
+    return new ApiError(
+      "zcode_workspace_not_open",
+      "zcode_workspace_not_open: ZCode 当前禁止打开工作区（如强制升级中），请先处理 ZCode 窗口后再重试。",
+      { exitCode: 3, status },
+    );
+  }
+  if (status === 400 && payload?.error === "workspace_path_invalid") {
+    return new ApiError(
+      "zcode_workspace_path_invalid",
+      "zcode_workspace_path_invalid: 工作区路径非法——须为有效的本地目录绝对路径。",
+      { exitCode: 1, status },
+    );
+  }
+  return undefined;
+}
+
 // ZCODE_SUB_DEBUG=1 时逐请求记一行摘要到 <getHome()>/debug.log。
 // 只记方法/路径/状态/响应长度，不写请求 body（prompt 内容）与 token；
 // 追加失败静默——调试日志绝不影响主流程。
@@ -145,25 +180,13 @@ export async function createTask(config, { workspacePath, prompt, title, mode, m
       ...(typeof payload.warning === "string" && payload.warning ? { warning: payload.warning } : {}),
     };
   }
-  if (status === 400 && payload?.error === "workspace_path_invalid") {
+  const wsError = workspaceApiError(status, payload);
+  if (wsError) throw wsError;
+  if (status === 400 && payload?.error === "invalid_model_selection") {
     throw new ApiError(
-      "zcode_workspace_path_invalid",
-      "zcode_workspace_path_invalid: 工作区路径非法——须为有效的本地绝对路径。",
+      "zcode_model_invalid",
+      `zcode_model_invalid: 上游拒绝了模型选择（${typeof payload.message === "string" && payload.message ? payload.message : "invalid_model_selection"}）——用 zcode-sub models 查看可选值。`,
       { exitCode: 1, status },
-    );
-  }
-  if (status === 409 && payload?.error === "workspace_not_open") {
-    throw new ApiError(
-      "zcode_workspace_not_open",
-      "zcode_workspace_not_open: 该工作区未在 ZCode 中打开。先在 ZCode 里打开该工作区再派发。",
-      { exitCode: 3, status: 409 },
-    );
-  }
-  if (status === 409 && payload?.error === "workspace_open_timeout") {
-    throw new ApiError(
-      "zcode_workspace_not_open",
-      "zcode_workspace_not_open: ZCode 打开该工作区超时——确认路径正确且 ZCode 可用后重试，或先在 ZCode 手动打开。",
-      { exitCode: 3, status: 409 },
     );
   }
   throw new ApiError(
@@ -175,28 +198,17 @@ export async function createTask(config, { workspacePath, prompt, title, mode, m
 
 // 模型目录（偏离#18）：GET /api/models，workspacePath 为非空字符串时带 query 供按工作区路由。
 // 2xx 返回 payload（{providers, preferred?}，preferred 形体即 modelSelection 可原样回传）；
-// 错误走统一约定：401/403→zcode_unauthorized(5)（apiFetch 内抛）、409 workspace_not_open→
-// zcode_workspace_not_open(3)（与 createTask 的 409 分支同构，spec §3 鉴权/409 语义一致），
+// 错误走统一约定：401/403→zcode_unauthorized(5)（apiFetch 内抛）、工作区族错误由
+// workspaceApiError 统一分流（409 → zcode_workspace_not_open(3)、400 path_invalid →
+// zcode_workspace_path_invalid(1)，与 createTask 等全部端点同口径），
 // 其余 ≥400 → zcode_send_failed(4)，网络失败→zcode_api_unreachable(2)（apiFetch 内抛）。
 export async function listModels(config, workspacePath) {
   const wsQuery =
     typeof workspacePath === "string" && workspacePath ? `?workspacePath=${encodeURIComponent(workspacePath)}` : "";
   const { status, payload } = await apiFetch(config, `/api/models${wsQuery}`);
   if (status >= 200 && status < 300) return payload;
-  if (status === 409 && payload?.error === "workspace_not_open") {
-    throw new ApiError(
-      "zcode_workspace_not_open",
-      "zcode_workspace_not_open: 该工作区未在 ZCode 中打开。先在 ZCode 里打开该工作区再试。",
-      { exitCode: 3, status: 409 },
-    );
-  }
-  if (status === 409 && payload?.error === "workspace_open_timeout") {
-    throw new ApiError(
-      "zcode_workspace_not_open",
-      "zcode_workspace_not_open: ZCode 打开该工作区超时——确认路径正确且 ZCode 可用后重试，或先在 ZCode 手动打开。",
-      { exitCode: 3, status: 409 },
-    );
-  }
+  const wsError = workspaceApiError(status, payload);
+  if (wsError) throw wsError;
   throw new ApiError(
     "zcode_send_failed",
     `zcode_send_failed: ZCode 返回 status=${status}，模型列表查询失败。`,
@@ -206,7 +218,9 @@ export async function listModels(config, workspacePath) {
 
 // 换模型（偏离#19：运行中允许，下一轮生效）。body 形体 {modelSelection, workspacePath?,
 // clientRequestId?}；clientRequestId 真值时允许网络类失败同键重试一次（偏离#20：端点侧
-// 幂等为独立 model 命名空间，与 send/create 隔离）。2xx 返回 payload；≥400 抛 zcode_send_failed(4)。
+// 幂等为独立 model 命名空间，与 send/create 隔离）。2xx 返回 payload；工作区族错误走
+// workspaceApiError 统一分流、registry 不可解析（invalid_model_selection）→ zcode_model_invalid(1)，
+// 其余 ≥400 抛 zcode_send_failed(4)。
 export async function setModel(config, taskId, modelSelection, workspacePath, clientRequestId) {
   const { status, payload } = await apiFetch(config, `/api/tasks/${encodeURIComponent(taskId)}/model`, {
     method: "POST",
@@ -218,6 +232,15 @@ export async function setModel(config, taskId, modelSelection, workspacePath, cl
     ...(clientRequestId ? { retryOnNetworkError: true } : {}),
   });
   if (status >= 200 && status < 300) return payload;
+  const wsError = workspaceApiError(status, payload);
+  if (wsError) throw wsError;
+  if (status === 400 && payload?.error === "invalid_model_selection") {
+    throw new ApiError(
+      "zcode_model_invalid",
+      `zcode_model_invalid: 上游拒绝了模型选择（${typeof payload.message === "string" && payload.message ? payload.message : "invalid_model_selection"}）——用 zcode-sub models 查看可选值。`,
+      { exitCode: 1, status },
+    );
+  }
   throw new ApiError(
     "zcode_send_failed",
     status === 404
@@ -244,6 +267,8 @@ export async function sendMessage(config, taskId, text, delivery = "auto", works
     ...(clientRequestId ? { retryOnNetworkError: true } : {}),
   });
   if (status >= 200 && status < 300) return payload;
+  const wsError = workspaceApiError(status, payload);
+  if (wsError) throw wsError;
   throw new ApiError(
     "zcode_send_failed",
     status === 404
@@ -260,6 +285,8 @@ export async function stopTask(config, taskId, workspacePath) {
     ...(workspacePath ? { body: { workspacePath } } : {}),
   });
   if (status >= 200 && status < 300) return payload;
+  const wsError = workspaceApiError(status, payload);
+  if (wsError) throw wsError;
   throw new ApiError(
     "zcode_send_failed",
     status === 404
@@ -273,6 +300,8 @@ export async function getTask(config, taskId, workspacePath) {
   const wsQuery = workspacePath ? `?workspacePath=${encodeURIComponent(workspacePath)}` : "";
   const { status, payload } = await apiFetch(config, `/api/tasks/${encodeURIComponent(taskId)}${wsQuery}`);
   if (status >= 200 && status < 300) return payload;
+  const wsError = workspaceApiError(status, payload);
+  if (wsError) throw wsError;
   throw new ApiError(
     "zcode_send_failed",
     status === 404
@@ -293,6 +322,8 @@ export async function getEvents(config, taskId, after, waitMs, workspacePath) {
   );
   // 任务不存在表现为 HTTP 404，此处统一抛错；wait 不再自己判 payload.error
   if (status >= 400) {
+    const wsError = workspaceApiError(status, payload);
+    if (wsError) throw wsError;
     throw new ApiError(
       "zcode_send_failed",
       `zcode_send_failed: 事件查询失败（status=${status}${payload?.error ? " " + payload.error : ""}）。任务可能已在 GUI 删除。`,

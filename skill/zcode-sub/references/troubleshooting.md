@@ -4,10 +4,10 @@
 
 | 码 | 特征 | 含义与动作 |
 |---|---|---|
-| 1 | 用法错误 / `zcode_not_configured` / `zcode_task_not_found` / `zcode_create_failed` / `zcode_model_invalid` / EACCES | 用法见 `zcode-sub --help`；未配置先 setup；本地任务名用 list 查；`zcode_model_invalid` 报错已列出可选模型/档位，按它改 --model/--thought |
+| 1 | 用法错误 / `zcode_not_configured` / `zcode_task_not_found` / `zcode_create_failed` / `zcode_model_invalid` / `zcode_workspace_path_invalid` / EACCES | 用法见 `zcode-sub --help`；未配置先 setup；本地任务名用 list 查；`zcode_model_invalid` 报错已列出可选模型/档位（上游拒绝时 message 为 provider-not-found 等——用 `zcode-sub models` 查可选值），按它改 --model/--thought；`zcode_workspace_path_invalid` = 工作区路径非法 |
 | 2 | stdout `TIMEOUT` | wait 本轮无新事件 → 再 wait 一次 |
 | 2 | stderr `zcode_api_unreachable` | ZCode 没开或重启中 → 读 setup.md |
-| 3 | `zcode_workspace_not_open` | 工作区未在 ZCode 打开（或为远端）→ 请用户在 GUI 打开再试 |
+| 3 | `zcode_workspace_not_open` | 工作区未打开/为远端→请用户在 GUI 打开；「打开该工作区超时」→ 可直接重试（打开请求可能仍在进行），反复超时再请用户手动打开；「禁止打开工作区」→ ZCode 在强制升级等状态，请用户先处理 ZCode 窗口 |
 | 4 | `zcode_send_failed` / `zcode_task_busy_for_resume` | 投递失败 / 任务已在 GUI 删除 / 运行中 resume 被拒（改用 send）（「模型列表查询失败」且 status=409 = 工作区未打开，按 exit 3 处置）；「模型列表查询失败」且 status=404 = ZCode 补丁版本不含模型接口，不能用 --model/--thought |
 | 5 | `zcode_unauthorized` | token/Host 校验失败 → 重跑 setup |
 | 7 | `zcode_name_invalid` / `zcode_name_taken` | 名字非法或重名（仅 `[A-Za-z0-9._-]+`）；重名时 ZCode 侧可能已留下孤儿对话，请用户在 GUI 清理 |

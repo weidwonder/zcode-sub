@@ -99,7 +99,7 @@ test("createTask：clientRequestId 进 body，同键二次 POST 去重命中 200
   assert.equal(rawSecond.body.taskId, rawFirst.body.taskId);
 });
 
-test("createTask：workspace 未打开 → zcode_workspace_not_open（exit 3），远端工作区同码", async () => {
+test("createTask：workspace 未打开/打开超时/打开被禁 → 统一 zcode_workspace_not_open（exit 3），远端工作区同码", async () => {
   await assert.rejects(
     () => createTask(config, { workspacePath: "/workspace-closed", prompt: "做点事" }),
     (error) =>
@@ -109,6 +109,25 @@ test("createTask：workspace 未打开 → zcode_workspace_not_open（exit 3）�
     () => createTask(config, { workspacePath: "/workspace-remote", prompt: "做点事" }),
     (error) =>
       error.code === "zcode_workspace_not_open" && error.exitCode === 3 && error.status === 409,
+  );
+  // workspace_open_timeout：同 code 同 exit 3，文案含「可直接重试」（打开请求可能仍在进行）
+  await assert.rejects(
+    () => createTask(config, { workspacePath: "/workspace-open-timeout", prompt: "做点事" }),
+    (error) =>
+      error.code === "zcode_workspace_not_open" &&
+      error.exitCode === 3 &&
+      error.status === 409 &&
+      error.message.includes("打开该工作区超时") &&
+      error.message.includes("可直接重试"),
+  );
+  // workspace_open_blocked：全局禁止打开工作区（如强制升级中）同 code 同 exit 3
+  await assert.rejects(
+    () => createTask(config, { workspacePath: "/workspace-open-blocked", prompt: "做点事" }),
+    (error) =>
+      error.code === "zcode_workspace_not_open" &&
+      error.exitCode === 3 &&
+      error.status === 409 &&
+      error.message.includes("禁止打开工作区"),
   );
 });
 
@@ -148,7 +167,7 @@ test("listModels：200 返回 providers/preferred；workspacePath 进 query，�
     models: [
       { modelId: "glm-4.7", displayName: "glm-4.7", thoughtLevels: ["off", "medium", "high"], isDefault: true },
       { modelId: "glm-4.7-flash", displayName: "glm-4.7-flash", thoughtLevels: [], isDefault: false },
-      { modelId: "glm-5.3", displayName: "glm-5.3", thoughtLevels: ["off", "medium", "high", "max"], isDefault: false },
+      { modelId: "glm-5.3", displayName: "glm-5.3", thoughtLevels: ["off", "medium", "high", "max"], defaultThoughtLevel: "max", isDefault: false },
     ],
   });
 
@@ -241,6 +260,36 @@ test("createTask：modelSelection 合法进 body；非法 400 zcode_create_faile
 
   await createTask(config, { workspacePath: "/w-create-model", prompt: "p" });
   assert.equal("modelSelection" in fake.calls.at(-1).body, false, "未传 modelSelection 时 body 不得含该键");
+});
+
+test("createTask/setModel：registry 不可解析（400 invalid_model_selection）→ zcode_model_invalid（exit 1）带原因与 models 指引", async () => {
+  // CLI 本地预校验会先拦住绝大多数；此处直打 api 层模拟「预校验后 registry 才不可解析」
+  // 的窄窗（或绕过 CLI 的调用方）：上游 400 {error:"invalid_model_selection", message} 映射
+  await assert.rejects(
+    () =>
+      createTask(config, {
+        workspacePath: "/w-model-ghost",
+        prompt: "p",
+        modelSelection: { providerId: "glm", modelId: "ghost-model" },
+      }),
+    (error) =>
+      error.code === "zcode_model_invalid" &&
+      error.exitCode === 1 &&
+      error.status === 400 &&
+      error.message.includes("model-not-found") &&
+      error.message.includes("zcode-sub models"),
+  );
+
+  const { taskId } = await createTask(config, { workspacePath: "/w-model-ghost", prompt: "p" });
+  await assert.rejects(
+    () => setModel(config, taskId, { providerId: "glm", modelId: "ghost-model" }, "/w-model-ghost"),
+    (error) =>
+      error.code === "zcode_model_invalid" &&
+      error.exitCode === 1 &&
+      error.status === 400 &&
+      error.message.includes("model-not-found") &&
+      error.message.includes("zcode-sub models"),
+  );
 });
 
 test("sendMessage：空闲任务 sent；运行中任务 auto→queued、steer→steered", async () => {

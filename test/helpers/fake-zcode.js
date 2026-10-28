@@ -13,7 +13,8 @@ import { randomUUID } from "node:crypto";
 // 检查——对齐偏离#7）。
 // 控制方法（用例驱动）：createTaskAlreadyRunning / emitEvent / setTaskStatus /
 // setLastAssistantText / settleSteer / createdTasks / calls / simulateResync /
-// forgetOwnership / resetEventSeq / failNextCreatePrompt / setOpUnavailable / setModels / stop。
+// forgetOwnership / resetEventSeq / failNextCreatePrompt / setOpUnavailable /
+// setOpWorkspaceError / setModels / stop。
 
 const MAX_WAIT_MS = 30_000;
 const MAX_BODY_CHARS = 16 * 1024 * 1024; // 413 阈值：16MiB
@@ -73,6 +74,9 @@ export async function startFakeZcode({ token = "test-token", port: listenPort = 
   let shuttingDown = false;
   let failNextCreatePromptFlag = false; // 一次性：下一次建任务回 201 + warning first_prompt_failed
   let opUnavailableFlag = false; // Host 退出模拟：开启后全部 op 请求结清 503 unavailable_host
+  // 工作区族错误模拟：设置后全部 op 端点（:taskId 五端点，非 create、非 models）立即回
+  // 409 {error: errorValue}；null 清除恢复
+  let opWorkspaceErrorValue = null;
   // 偏离#18 模型目录（可被 setModels 覆盖）；preferred 形体即 modelSelection、可原样回传。
   // glm-5.3 带 max 档位、gpt-5 带 defaultThoughtLevel：供「未指定 --thought 用默认档位」
   // 的三条兜底路径（max 优先 / defaultThoughtLevel 回落 / 末档兜底）分别取材。
@@ -81,7 +85,7 @@ export async function startFakeZcode({ token = "test-token", port: listenPort = 
       { providerId: "glm", displayName: "glm", models: [
         { modelId: "glm-4.7", displayName: "glm-4.7", thoughtLevels: ["off", "medium", "high"], isDefault: true },
         { modelId: "glm-4.7-flash", displayName: "glm-4.7-flash", thoughtLevels: [], isDefault: false },
-        { modelId: "glm-5.3", displayName: "glm-5.3", thoughtLevels: ["off", "medium", "high", "max"], isDefault: false },
+        { modelId: "glm-5.3", displayName: "glm-5.3", thoughtLevels: ["off", "medium", "high", "max"], defaultThoughtLevel: "max", isDefault: false },
       ] },
       { providerId: "openai", displayName: "openai", models: [
         { modelId: "gpt-5", displayName: "gpt-5", thoughtLevels: ["low", "medium", "high"], defaultThoughtLevel: "low", isDefault: false },
@@ -194,6 +198,15 @@ export async function startFakeZcode({ token = "test-token", port: listenPort = 
         return;
       }
 
+      // 工作区族错误控制开关（setOpWorkspaceError）：设置后所有 op 端点（messages/
+      // stop/get/events/model——即 /api/tasks/:id 五端点；create 是 POST /api/tasks、
+      // models 是 GET /api/models，均不含 :id，不在其列）立即回 409 {error:...}，
+      // 供「工作区族错误全命令一致映射」类用例驱动；后续校验都不再走
+      if (opWorkspaceErrorValue !== null && pathname.startsWith("/api/tasks/")) {
+        json(response, 409, { error: opWorkspaceErrorValue });
+        return;
+      }
+
       // 2) Host 403：A 侧只收 127.0.0.1/localhost 的 Host
       const host = String(request.headers.host ?? "");
       if (host !== `127.0.0.1:${port}` && host !== `localhost:${port}`) {
@@ -251,7 +264,13 @@ export async function startFakeZcode({ token = "test-token", port: listenPort = 
           json(response, 400, { error: "bad_model_selection" });
           return;
         }
-        // 未打开的工作区（远端工作区同码）→ 409；打开超时 → 409 workspace_open_timeout；
+        // A 侧模型选择加固：registry 不可解析（未知模型等）→ 400 invalid_model_selection
+        // （message 带原因）。本地预校验会先拦住绝大多数，CLI 直连（如 api 层用例）在此触达
+        if (body.modelSelection?.modelId === "ghost-model") {
+          json(response, 400, { error: "invalid_model_selection", message: "model-not-found" });
+          return;
+        }
+        // 未打开的工作区（远端工作区同码）→ 409；打开超时/打开被禁 → 409 同族；
         // 路径非法 → 400 workspace_path_invalid（A 侧预留错误，B 侧先映射）
         if (body.workspacePath === "/workspace-closed" || body.workspacePath === "/workspace-remote") {
           json(response, 409, { error: "workspace_not_open" });
@@ -259,6 +278,10 @@ export async function startFakeZcode({ token = "test-token", port: listenPort = 
         }
         if (body.workspacePath === "/workspace-open-timeout") {
           json(response, 409, { error: "workspace_open_timeout" });
+          return;
+        }
+        if (body.workspacePath === "/workspace-open-blocked") {
+          json(response, 409, { error: "workspace_open_blocked" });
           return;
         }
         if (body.workspacePath === "/workspace-bad-path") {
@@ -346,6 +369,11 @@ export async function startFakeZcode({ token = "test-token", port: listenPort = 
         }
         if (!isStrictModelSelection(body.modelSelection)) {
           json(response, 400, { error: "bad_model_selection" });
+          return;
+        }
+        // A 侧模型选择加固（同 create）：registry 不可解析 → 400 invalid_model_selection
+        if (body.modelSelection?.modelId === "ghost-model") {
+          json(response, 400, { error: "invalid_model_selection", message: "model-not-found" });
           return;
         }
         // 偏离#20：clientRequestId 幂等为独立 model 命名空间（与 messages/create 隔离）；
@@ -526,6 +554,11 @@ export async function startFakeZcode({ token = "test-token", port: listenPort = 
     // 503 {error:"unavailable_host"}；关闭后恢复正常
     setOpUnavailable(enabled) {
       opUnavailableFlag = enabled === true;
+    },
+    // 工作区族错误模拟：设置后所有 op 端点（messages/stop/get/events/model，非 create、
+    // 非 models）立即回 409 {error: errorValue}；传 null 清除恢复
+    setOpWorkspaceError(errorValue) {
+      opWorkspaceErrorValue = errorValue ?? null;
     },
     // 覆盖 GET /api/models 的返回（偏离#18），供用例替换默认模型目录数据
     setModels(payload) {
