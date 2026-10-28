@@ -1156,6 +1156,36 @@ test("send --interrupt：停止→等回空闲→新一轮发送；超时与互�
   assert.match(conflict.stderr, /互斥/u);
 });
 
+test("send --interrupt：推进事件游标——截断轮事件不再出现在后续 wait", async () => {
+  // 真机 P1：send --interrupt 截断的那一轮事件仍留在缓冲里，后续 wait 会当新事件重放
+  // （[turn.completed] 散文前半段后跟新一轮 [turn.started]），父代理按「同批见终态就
+  // result 收尾」会误判任务结束、result 到截断文本。修复：确认空闲后、发送前读增量页
+  // （waitMs=0）把持久游标推进到当前 nextSeq。
+  const { taskId } = await dispatchTask("itp-3");
+  fake.createTaskAlreadyRunning(taskId);
+  // 截断轮两事件入缓冲（seq 1/2）：后续 wait 原本会重放它们
+  fake.emitEvent(taskId, "turn.started", { turnId: "turn-cut" });
+  fake.emitEvent(taskId, "assistant.message", { text: "被截断的前半段" });
+  const pending = runCli(["send", "itp-3", "改方向", "--interrupt"]);
+  await new Promise((resolve) => setTimeout(resolve, 400));
+  fake.setTaskStatus(taskId, "idle");
+  const result = await pending;
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /已截断当前生成/u);
+  assert.match(result.stdout, /投递结果：sent/u);
+  // 游标已推进过截断轮（分片直读；发送本身触发的 messages 空闲分支 turn.started
+  // 发生在游标读取之后，不影响这里的值）
+  assert.equal(loadTasks(home).tasks["itp-3"].eventsSeq, 2);
+
+  // 新一轮事件（seq 4：messages 空闲分支自产的 turn.started 占了 seq 3）
+  fake.emitEvent(taskId, "assistant.message", { text: "新一轮正文" });
+  const waited = await runCli(["wait", "itp-3", "--timeout", "5"]);
+  assert.equal(waited.status, 0, waited.stderr);
+  assert.ok(!waited.stdout.includes("被截断的前半段"), `wait 不应看到截断轮正文：${waited.stdout}`);
+  assert.match(waited.stdout, /新一轮正文/u);
+  settle("itp-3");
+});
+
 test("resume：空闲接续 sent；运行中拒绝（exit 4 busy_for_resume）", async () => {
   const { taskId } = await dispatchTask("res-1");
 

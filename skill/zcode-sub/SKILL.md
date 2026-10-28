@@ -58,5 +58,5 @@ zcode-sub run "补测试" --cwd /repo-wt --name tests   # 改代码的任务分�
 # Bash 工具后台各跑：wait audit、wait tests；按判读表分流，见终态事件后 result 收尾
 ```
 
-案例二（运行中改向）：要等当前步骤结束再注入用 `--steer`（wait 看 `[steer.injected]` 生效 / `[steer.fellBack]` 被降级，按判读表处理）；要立即改向用 `zcode-sub send <name> "改用方案 B" --interrupt`（截断当前生成，未完成内容丢弃，消息作为新一轮发送；对用户正在操作的对话先问用户）。截断后 wait 可能先出现上一轮的 turn.completed/failed，result 显示还在跑就继续 wait；已执行的文件改动不回滚。
+案例二（运行中改向）：要等当前步骤结束再注入用 `--steer`（wait 看 `[steer.injected]` 生效 / `[steer.fellBack]` 被降级，按判读表处理）；要立即改向用 `zcode-sub send <name> "改用方案 B" --interrupt`（截断当前生成，未完成内容丢弃，消息作为新一轮发送；对用户正在操作的对话先问用户）。send 已把事件游标推进过截断轮——之后**新起的** wait 不再看到它；interrupt 时正在挂起的 wait 仍可能先收到截断轮的终态事件（其后紧跟新一轮 turn.started），见到这种情况继续 wait 不要误收尾；已执行的文件改动不回滚。
 案例三（按模型派发）：`zcode-sub models --cwd /repo` 选出 glm/glm-4.7 与档位 high → `zcode-sub run "<任务>" --cwd /repo --model glm/glm-4.7 --thought high`；遇 `zcode_model_invalid` 按报错列出的可选值改。

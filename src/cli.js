@@ -665,6 +665,17 @@ async function cmdSend(home, flags) {
       await new Promise((r) => setTimeout(r, 500));
     }
     process.stdout.write("✓ 已截断当前生成，未完成内容丢弃\n");
+    // 截断轮的事件仍在缓冲里，后续 wait 会当新事件重放（终态事件会误导父代理提前收尾）——
+    // 读当前 nextSeq（增量页，waitMs=0）把持久游标推进到这里。正在挂起的旧 wait 不受影响
+    // （其内存游标不变，Skill 已注明）；读取失败不阻断发送。
+    try {
+      const page = await api.getEvents(config, task.taskId, task.eventsSeq ?? 0, 0, task.workspacePath);
+      if (page && !page.resync && Number.isFinite(page.nextSeq) && page.nextSeq > (task.eventsSeq ?? 0)) {
+        tasks.updateTask(home, name, { eventsSeq: page.nextSeq });
+      }
+    } catch {
+      process.stderr.write("⚠ 未读到事件游标：后续 wait 可能先看到被截断那一轮的终态事件\n");
+    }
   }
   const delivery = flags.steer ? "steer" : flags.queue ? "queue" : "auto";
   // 幂等键：与 run 同规则（"zsub-"+UUID，总长 41）；网络失败同键安全重试一次，不双投
