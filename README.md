@@ -11,7 +11,7 @@
 - **多任务并行**——每次 `run` 新开一个对话，同时未结束的任务默认最多 4 个（可调）。
 - **运行中改向**——任务跑着也能追加要求，或直接打断重来（见[运行中改向](#运行中改向)）。
 
-<!-- 截图：ZCode 窗口里运行中的派发任务 + 旁边终端 wait 输出；文件放 docs/assets/screenshot.png -->
+![左：Claude Code 派发任务后在前台 wait；右：ZCode 里同名对话正在运行，子代理通过 MCP 调用 reply_to_parent 给父代理发进度](docs/assets/screenshot.png)
 
 ## 工作原理
 

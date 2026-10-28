@@ -11,7 +11,7 @@ Dispatch a task into an ordinary conversation in the local ZCode desktop app wit
 - **Parallel tasks** — each `run` opens a new conversation; up to 4 unfinished tasks by default (tunable).
 - **Redirect mid-run** — add requirements while a task runs, or interrupt and restart it (see [Redirecting a running task](#redirecting-a-running-task)).
 
-<!-- Screenshot: a dispatched task running in the ZCode window + a terminal showing wait output next to it; file goes to docs/assets/screenshot.png -->
+![Left: Claude Code dispatches a task and waits in the foreground; right: the same task running as a normal chat in ZCode, where the subagent calls reply_to_parent over MCP to send progress to its parent](docs/assets/screenshot.png)
 
 ## How it works
 
