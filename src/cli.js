@@ -221,12 +221,14 @@ async function cmdSetup(home, flags) {
   let config = loadConfig(home) ?? createInitialConfig();
 
   let requestedPort = null;
-  if (typeof flags["api-port"] === "string") {
-    const port = Number.parseInt(flags["api-port"], 10);
-    if (Number.isInteger(port) && port > 0) {
-      requestedPort = port;
-      config = updateConfig(home, { apiPort: port });
+  if (flags["api-port"] !== undefined) {
+    // 坏值（非字符串的布尔形态/空串/非整数/非正数）按用法错误拦下，不静默走默认端口
+    const port = typeof flags["api-port"] === "string" ? Number.parseInt(flags["api-port"], 10) : Number.NaN;
+    if (!Number.isInteger(port) || port <= 0) {
+      throw usageError("--api-port 需要整数端口号");
     }
+    requestedPort = port;
+    config = updateConfig(home, { apiPort: port });
   }
 
   const existing = readSwitchFile(switchFile);
@@ -242,6 +244,11 @@ async function cmdSetup(home, flags) {
     process.stdout.write(`✓ 开关文件已存在并启用：${switchFile}（token 复用，port=${existing.port}）\n`);
   } else {
     const token = config.token || randomBytes(32).toString("hex");
+    // 写入前预告路径与内容摘要（token 只露前 4 位）：这一步会落一个让 ZCode 开启
+    // 本机任务 API 的开关文件，写入前应已征得用户同意。已存在并启用的读回路径不打印。
+    process.stdout.write(
+      `ℹ 将写入 ZCode 开关文件 ${switchFile}：{"enabled":true,"port":${config.apiPort},"token":"${token.slice(0, 4)}****"}（需重启 ZCode 生效；写入前应已征得用户同意）\n`,
+    );
     try {
       writeSwitchFile(switchFile, { enabled: true, port: config.apiPort, token });
       config = updateConfig(home, { token });
@@ -427,14 +434,27 @@ function resolveModelSelection(flags, config) {
     }
     modelFlag = { providerId: parts[0], modelId: parts[1] };
   }
+  // --thought 坏值（忘写值的布尔形态/空串）按用法错误拦下，不静默落到 config 档位
+  if (flags.thought !== undefined && (typeof flags.thought !== "string" || flags.thought === "")) {
+    throw usageError("--thought 需要一个档位值，如 --thought high");
+  }
   const base =
     config.defaultModel !== null && typeof config.defaultModel === "object" && !Array.isArray(config.defaultModel)
       ? config.defaultModel
       : {};
   const providerId = modelFlag?.providerId ?? base.providerId;
   const modelId = modelFlag?.modelId ?? base.modelId;
+  // 档位继承收窄：--thought 显式优先；未给 --thought 时仅当「没传 --model」或「--model 与
+  // config.defaultModel 是同一模型」（providerId/modelId 都相同）才继承 defaultModel 的档位——
+  // --model 换了别的模型时，配置里的档位不跟着搬到新模型上。
+  const sameModelAsDefault =
+    modelFlag === null || (modelFlag.providerId === base.providerId && modelFlag.modelId === base.modelId);
   const reasoningLevel =
-    typeof flags.thought === "string" && flags.thought ? flags.thought : base?.options?.reasoningLevel;
+    typeof flags.thought === "string" && flags.thought
+      ? flags.thought
+      : sameModelAsDefault
+        ? base?.options?.reasoningLevel
+        : undefined;
   if (flags.thought !== undefined && (!providerId || !modelId)) {
     throw usageError("--thought 需要 --model 或 config defaultModel 提供模型");
   }
@@ -466,7 +486,7 @@ async function validateModelSelection(config, workspacePath, selection) {
     const levels = Array.isArray(model.thoughtLevels) ? model.thoughtLevels : [];
     if (levels.length === 0) {
       const err = new Error(
-        `zcode_model_invalid: 模型 ${selection.providerId}/${selection.modelId} 无思考档位，去掉 --thought`,
+        `zcode_model_invalid: 模型 ${selection.providerId}/${selection.modelId} 无思考档位，去掉 --thought；档位可显式传 --thought 覆盖（若来自 config defaultModel 可修改配置）`,
       );
       err.code = "zcode_model_invalid";
       err.exitCode = 1;
@@ -474,7 +494,7 @@ async function validateModelSelection(config, workspacePath, selection) {
     }
     if (!levels.includes(wanted)) {
       const err = new Error(
-        `zcode_model_invalid: 思考档位非法：${wanted}，可选 ${levels.join(",")}`,
+        `zcode_model_invalid: 思考档位非法：${wanted}，可选 ${levels.join(",")}；档位可显式传 --thought 覆盖（若来自 config defaultModel 可修改配置）`,
       );
       err.code = "zcode_model_invalid";
       err.exitCode = 1;
@@ -753,7 +773,9 @@ async function cmdWait(home, flags) {
   const task = requireTask(home, name);
   // steer 对账集合：本 CLI 每次 --steer 受理时记入分片的 commandId；打印 input.steered
   // 时对得上的是自己的引导，对不上的是 GUI 侧发起的引导（同任务两路来源）。
-  const ownSteerIds = new Set(Array.isArray(task.steerCommandIds) ? task.steerCommandIds : []);
+  // 入口只是初值——标准工作流是「后台 wait + 运行中 send --steer」，send 写入发生在
+  // wait 启动之后，拿到事件批时重读分片刷新（下方 events.length > 0 分支）。
+  let ownSteerIds = new Set(Array.isArray(task.steerCommandIds) ? task.steerCommandIds : []);
   const config = requireConfig(home);
   const timeoutSec = Number.parseInt(String(flags.timeout ?? "600"), 10) || 600;
   const deadline = Date.now() + timeoutSec * 1000;
@@ -813,6 +835,10 @@ async function cmdWait(home, flags) {
       continue;
     }
     if (events.length > 0) {
+      // 对账集合实时刷新：以分片现值为准，后台 wait 启动后前台 send --steer 写入的
+      // commandId 才能对上（入口快照会把用户自己的引导稳定误判成 GUI 侧）。
+      const fresh = tasks.getTask(home, name);
+      ownSteerIds = new Set(Array.isArray(fresh?.steerCommandIds) ? fresh.steerCommandIds : []);
       // 先扫全部事件定 lastStatus：被批级上限略过的事件也要参与终态判断
       const patch = { eventsSeq: payload.nextSeq };
       for (const event of events) {

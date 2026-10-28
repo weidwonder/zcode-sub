@@ -400,6 +400,37 @@ test("appendSteerCommandId：追加、幂等、无分片/坏分片返回 null �
   }
 });
 
+// 并发合并写（顺序用例钉契约）：后台 wait 写 eventsSeq 与前台 send 写 steerCommandIds
+// 走的是同一分片的两条读-改-写路径，写回前重读合并——任一方的字段都不得被另一方冲掉。
+test("并发合并写：updateTask(eventsSeq) 后 appendSteerCommandId，eventsSeq 不丢", () => {
+  const home = tempHome();
+  try {
+    registerTask(home, "m1", { taskId: "task-1", workspacePath: "/tmp/ws" });
+    updateTask(home, "m1", { eventsSeq: 9 });
+    appendSteerCommandId(home, "m1", "cmd-1");
+    const shard = JSON.parse(readFileSync(shardPath(home, "m1"), "utf8"));
+    assert.equal(shard.eventsSeq, 9, "追加 steer 键不得冲掉 wait 写的 eventsSeq（否则下次 wait 事件重放）");
+    assert.deepEqual(shard.steerCommandIds, ["cmd-1"]);
+  } finally {
+    rmSync(home, { recursive: true, force: true });
+  }
+});
+
+test("并发合并写：appendSteerCommandId 后 updateTask(lastStatus)，steerCommandIds 保留", () => {
+  const home = tempHome();
+  try {
+    registerTask(home, "m2", { taskId: "task-2", workspacePath: "/tmp/ws" });
+    appendSteerCommandId(home, "m2", "cmd-1");
+    updateTask(home, "m2", { lastStatus: "running" });
+    const shard = JSON.parse(readFileSync(shardPath(home, "m2"), "utf8"));
+    assert.deepEqual(shard.steerCommandIds, ["cmd-1"], "updateTask 不得冲掉 send 写的 steerCommandIds（否则对账误判）");
+    assert.equal(shard.lastStatus, "running");
+    assert.equal(shard.eventsSeq, 0, "未给 eventsSeq 的 patch 不动游标");
+  } finally {
+    rmSync(home, { recursive: true, force: true });
+  }
+});
+
 test("坏分片：updateTask 备份后按不存在；只读路径不备份；registerTask 可重新登记", () => {
   const home = tempHome();
   try {

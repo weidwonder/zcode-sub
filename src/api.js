@@ -127,7 +127,7 @@ export async function createTask(config, { workspacePath, prompt, title, mode, m
       workspacePath,
       prompt,
       title,
-      // mode 可选（偏离#11 枚举见端点白名单）；CLI 暂无 --mode，仅为接口完备
+      // mode 可选（偏离#11 枚举见端点白名单）；由 cmdRun 解析（默认 yolo，D-v2-17），此处透传
       ...(mode ? { mode } : {}),
       // 偏离#17：模型选择（{providerId, modelId, options?{reasoningLevel}}），有值（对象）才进 body
       ...(modelSelection ? { modelSelection } : {}),
@@ -161,13 +161,21 @@ export async function createTask(config, { workspacePath, prompt, title, mode, m
 
 // 模型目录（偏离#18）：GET /api/models，workspacePath 为非空字符串时带 query 供按工作区路由。
 // 2xx 返回 payload（{providers, preferred?}，preferred 形体即 modelSelection 可原样回传）；
-// 错误走统一约定：401/403→zcode_unauthorized(5)（apiFetch 内抛），其余 ≥400 → zcode_send_failed(4)，
-// 网络失败→zcode_api_unreachable(2)（apiFetch 内抛）。
+// 错误走统一约定：401/403→zcode_unauthorized(5)（apiFetch 内抛）、409 workspace_not_open→
+// zcode_workspace_not_open(3)（与 createTask 的 409 分支同构，spec §3 鉴权/409 语义一致），
+// 其余 ≥400 → zcode_send_failed(4)，网络失败→zcode_api_unreachable(2)（apiFetch 内抛）。
 export async function listModels(config, workspacePath) {
   const wsQuery =
     typeof workspacePath === "string" && workspacePath ? `?workspacePath=${encodeURIComponent(workspacePath)}` : "";
   const { status, payload } = await apiFetch(config, `/api/models${wsQuery}`);
   if (status >= 200 && status < 300) return payload;
+  if (status === 409 && payload?.error === "workspace_not_open") {
+    throw new ApiError(
+      "zcode_workspace_not_open",
+      "zcode_workspace_not_open: 该工作区未在 ZCode 中打开。先在 ZCode 里打开该工作区再试。",
+      { exitCode: 3, status: 409 },
+    );
+  }
   throw new ApiError(
     "zcode_send_failed",
     `zcode_send_failed: ZCode 返回 status=${status}，模型列表查询失败。`,

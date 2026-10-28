@@ -4,26 +4,24 @@
 
 ## 1. 安装 CLI
 
-要求 Node ≥ 22。优先「绝对路径 + shim」（`npm link` 会写全局 bin 目录，次选）：
+要求 Node ≥ 22。优先「绝对路径 + shim」（`npm link` 会写全局 bin 目录，次选）。四步：
 
-```bash
-zcode-sub --version   # 已可用（输出 zcode-sub x.y.z）则跳过安装
-command -v zcode-sub  # 确认当前 Bash 环境找得到
-```
+1. 向用户确认 zcode-sub 仓库路径（本工具不发布 npm，本地路径或 URL）；
+2. `node --version` 确认 ≥ 22；
+3. 按 §5 模板建 shim——统一用 setup 报错输出的模板或 §5 模板，不要自己另写一份（家目录未被重定向时可省略两行 export）；
+4. `command -v zcode-sub && zcode-sub --version` 验证。
 
-shim 统一用 setup 报错输出的模板，或第 5 节的模板（见下）——不要自己另写一份。
-
-仓库来源不确定时向用户确认（本地路径或 URL）——本工具不发布 npm。ZCode 桌面版需已装「本机任务 API」补丁：setup 健康检查报 `zcode_health_mismatch` 且用户已重启过 ZCode 仍不过 → **停下，告知用户这台 ZCode 没装补丁、本工具无法使用**，不要继续尝试。
+ZCode 桌面版需已装「本机任务 API」补丁：setup 健康检查报 `zcode_health_mismatch` 且用户已重启过 ZCode 仍不过 → **停下，告知用户这台 ZCode 没装补丁、本工具无法使用**，不要继续尝试。
 
 ## 2. 一次性配置：zcode-sub setup
 
-首次运行 setup 前先征得用户同意——它会写 ZCode 侧开关文件（属于改 ZCode 配置），且写完需要重启 ZCode。
+跑 setup 前先征得用户同意——开关文件不存在或未启用时它会写 <真实家目录>/.zcode/v2/local-task-api.json（属于改 ZCode 配置），且写完需要重启 ZCode；不能确认该文件已存在且 enabled:true 时一律先问。setup 写入前会打印将要写的路径与内容摘要（token 只露前 4 位）。
 
-- 检查/写开关文件 `<真实家目录>/.zcode/v2/local-task-api.json`（**不是 `$HOME`**——HOME 被重定向的环境先看第 5 节；不确定 `<真实家目录>` 时向用户询问登录用户名或家目录，不要猜）；写完需重启 ZCode 生效（重启由用户执行——Agent 不自行结束或重启 ZCode 进程，告知用户后等用户操作）；
+- 检查/写开关文件 `<真实家目录>/.zcode/v2/local-task-api.json`（**不是 `$HOME`**——HOME 被重定向的环境先看 §5；不确定 `<真实家目录>` 时向用户询问登录用户名或家目录，不要猜）；写完需重启 ZCode 生效（重启由用户执行——Agent 不自行结束或重启 ZCode 进程，告知用户后等用户操作）；
 - 健康检查应见「✓ 本机任务 API 正常」；
-- 打印 MCP 配置片段（第 4 节）。
+- 打印 MCP 配置片段（§4）。
 
-目录不可写：让用户为该目录授权（本座位环境即 `dwc grant <目录>`）后重跑。
+目录不可写：让用户为该目录授权——环境提供 `dwc grant` 命令时用它（CLI 提示的 `dwc grant` 只在该命令存在的环境有效），否则请用户自行修正目录权限——之后重跑 setup（同上）。
 
 ## 3. 连不上 API（zcode_api_unreachable）
 
@@ -31,7 +29,7 @@ shim 统一用 setup 报错输出的模板，或第 5 节的模板（见下）�
 1. 问用户 ZCode 桌面版是否开着（没开 → 请用户启动）；
 2. 刚写过开关文件 → 请用户重启 ZCode 后重试；
 3. 报 503 unavailable_host（窗口已关闭或 ZCode 正在重启）→ 稍等片刻重试；
-4. 仍不通 → 跑 zcode-sub setup 看健康检查输出，按 §1 的补丁判断处理。
+4. 仍不通 → 跑 zcode-sub setup（先按 §2 的口径确认或征得同意）看健康检查输出，按 §1 的补丁判断处理。
 
 ## 4. 把 reply_to_parent 配进 ZCode（否则子代理无法主动汇报，症状是永远收不到 [reply] 行）
 
@@ -50,12 +48,13 @@ shim 统一用 setup 报错输出的模板，或第 5 节的模板（见下）�
 
 建议按 setup 报错输出的 shim 模板做成包装脚本放 PATH——与 setup 输出的模板同源，二选一即可，落点如下：
 
+存为 `~/.local/bin/zcode-sub`（该目录需在 PATH 中），chmod +x 后 `command -v zcode-sub` 验证：
+
 ```bash
-# 存为 ~/.local/bin/zcode-sub（该目录需在 PATH 中），chmod +x 后 command -v zcode-sub 验证：
 #!/bin/bash
 export ZCODE_SUB_HOME=/Users/<你的用户名>/.zcode-sub
 export ZCODE_DATA_BASE_DIR=/Users/<你的用户名>
-exec /Users/<你的用户名>/projects/zcode-sub/bin/zcode-sub.js "$@"
+exec <仓库路径>/bin/zcode-sub.js "$@"
 ```
 
 工作区要求：`run --cwd` 的工作区必须已在 ZCode 打开（本地窗口）；未打开或为远端 → 409，请用户在 ZCode GUI 打开后再派发。

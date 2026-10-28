@@ -156,6 +156,11 @@ test("setup：开关文件不存在 → 生成（0600/enabled/port/64hex token�
   assert.equal(config.token, parsed.token, "config 应读回生成的 token");
 
   assert.match(result.stdout, /✓ 已写入开关文件/u);
+  // 写入前预告：路径 + 内容摘要，token 只露前 4 位（不全文打印）
+  assert.ok(result.stdout.includes("将写入 ZCode 开关文件"), `应含写入预告：${result.stdout}`);
+  assert.ok(result.stdout.includes(switchFile), "写入预告应含开关文件路径");
+  assert.ok(result.stdout.includes(`${parsed.token.slice(0, 4)}****`), "预告摘要应含 token 前 4 位 + ****");
+  assert.ok(!result.stdout.includes(parsed.token), "token 不得全量打印");
   assert.match(result.stdout, /✓ 本机任务 API 正常 zcodeVersion=test-1\.0\.0/u);
   assert.match(result.stdout, /状态目录可写/u);
   assert.ok(result.stdout.includes(setupHomeA), "MCP 片段应含 ZCODE_SUB_HOME=home 绝对路径");
@@ -178,6 +183,7 @@ test("setup：开关文件已存在且启用 → 复用 token/port，不重写�
   });
   assert.equal(result.status, 0, result.stderr);
   assert.match(result.stdout, /开关文件已存在并启用/u);
+  assert.ok(!result.stdout.includes("将写入"), "已存在并启用（读回路径）不应打印写入预告");
 
   assert.equal(readFileSync(switchFile, "utf8"), before, "已启用的开关文件不应被重写");
   const config = loadConfig(setupHomeB);
@@ -209,6 +215,23 @@ test("setup：--api-port 与开关文件端口冲突 → 提示并以开关文�
   const config = loadConfig(setupHomeC);
   assert.equal(config.apiPort, setupFake.port, "后续步骤用开关文件端口");
   assert.equal(config.token, "tok-switch-c");
+});
+
+test("setup：--api-port 非整数 → exit 1 用法错误（不静默走默认端口）", async () => {
+  const badHome = mkdtempSync(join(tmpdir(), "zcode-sub-setup-badport-"));
+  const badData = mkdtempSync(join(tmpdir(), "zcode-sub-data-badport-"));
+  try {
+    const result = await runCli(["setup", "--api-port", "abc"], {
+      ZCODE_SUB_HOME: badHome,
+      ZCODE_DATA_BASE_DIR: badData,
+    });
+    assert.equal(result.status, 1);
+    assert.match(result.stderr, /--api-port 需要/u);
+    assert.ok(!existsSync(join(badData, ".zcode")), "坏值应在写开关文件之前拦下");
+  } finally {
+    rmSync(badHome, { recursive: true, force: true });
+    rmSync(badData, { recursive: true, force: true });
+  }
 });
 
 test("setup：开关文件目录不可写 → 手动创建指引 + dwc grant 提示，流程继续", async () => {
@@ -534,39 +557,107 @@ test("run：模型无思考档位（thoughtLevels 空数组）却给 --thought �
   assert.equal(result.status, 1);
   assert.match(result.stderr, /无思考档位/u);
   assert.match(result.stderr, /去掉 --thought/u);
+  assert.match(result.stderr, /档位可显式传 --thought 覆盖/u, "档位错误文案应带脱困指引");
 });
 
-test("run：config.defaultModel 兜底；--model 覆盖 provider/model 但 thought 沿用配置", async () => {
+test("run：--thought 忘写值（布尔形态）→ exit 1 用法错误，不静默落到 config 档位", async () => {
+  const callsBefore = fake.calls.length;
+  const result = await runCli([
+    "run",
+    "忘档位任务",
+    "--cwd",
+    "/tmp/thought-bool",
+    "--name",
+    "thought-bool",
+    "--model",
+    "glm/glm-4.7",
+    "--thought",
+  ]);
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /--thought 需要/u);
+  assert.equal(fake.calls.length, callsBefore, "用法错误在建任务之前拦下，不产生任何 API 调用");
+});
+
+test("run：--thought 空串 → exit 1 用法错误", async () => {
+  const result = await runCli([
+    "run",
+    "空档位任务",
+    "--cwd",
+    "/tmp/thought-empty",
+    "--name",
+    "thought-empty",
+    "--model",
+    "glm/glm-4.7",
+    "--thought",
+    "",
+  ]);
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /--thought 需要/u);
+});
+
+test("run：defaultModel 档位继承收窄——换模型不继承；同模型/无 --model 继承；--thought 显式覆盖", async () => {
   const modelsEnv = { ZCODE_SUB_HOME: modelsHome };
-  const selection = { providerId: "glm", modelId: "glm-4.7", options: { reasoningLevel: "medium" } };
+  const selection = { providerId: "glm", modelId: "glm-4.7", options: { reasoningLevel: "high" } };
   saveConfig(modelsHome, { apiPort: fake.port, token: TOKEN, defaultModel: selection });
 
-  // 不带 --model：defaultModel 原样合成 modelSelection
-  const plain = await runCli(["run", "配置默认模型", "--cwd", "/tmp/cfg-model-a", "--name", "cfg-model-a"], modelsEnv);
-  assert.equal(plain.status, 0, plain.stderr);
-  const plainCall = fake.calls.find(
-    (entry) => entry.method === "POST" && entry.url.split("?")[0] === "/api/tasks" && entry.body?.title === "cfg-model-a",
-  );
-  assert.ok(plainCall, "应有 cfg-model-a 的建任务请求");
-  assert.deepEqual(plainCall.body.modelSelection, selection);
-  settle("cfg-model-a");
+  const createBodyOf = (name) => {
+    const call = fake.calls.find(
+      (entry) => entry.method === "POST" && entry.url.split("?")[0] === "/api/tasks" && entry.body?.title === name,
+    );
+    assert.ok(call, `应有 ${name} 的建任务请求`);
+    return call.body;
+  };
 
-  // --model 只覆盖 provider/model，--thought 未给时 reasoningLevel 沿用配置
+  // 1) --model 换到无档位模型、不带 --thought：不继承配置档位（否则这里会被「无思考档位」拦下），
+  //    modelSelection 不含 options
+  const flash = await runCli(
+    ["run", "换无档位模型", "--cwd", "/tmp/cfg-m-flash", "--name", "cfg-m-flash", "--model", "glm/glm-4.7-flash"],
+    modelsEnv,
+  );
+  assert.equal(flash.status, 0, flash.stderr);
+  assert.deepEqual(createBodyOf("cfg-m-flash").modelSelection, { providerId: "glm", modelId: "glm-4.7-flash" });
+  settle("cfg-m-flash");
+
+  // 2) --model 换到别的模型：同样不继承
+  const other = await runCli(
+    ["run", "换别的模型", "--cwd", "/tmp/cfg-m-other", "--name", "cfg-m-other", "--model", "openai/gpt-5"],
+    modelsEnv,
+  );
+  assert.equal(other.status, 0, other.stderr);
+  assert.deepEqual(createBodyOf("cfg-m-other").modelSelection, { providerId: "openai", modelId: "gpt-5" });
+  settle("cfg-m-other");
+
+  // 3) --model 与 defaultModel 是同一模型（providerId/modelId 都相同）：继承配置档位 high
+  const same = await runCli(
+    ["run", "同模型继承档位", "--cwd", "/tmp/cfg-m-same", "--name", "cfg-m-same", "--model", "glm/glm-4.7"],
+    modelsEnv,
+  );
+  assert.equal(same.status, 0, same.stderr);
+  assert.deepEqual(createBodyOf("cfg-m-same").modelSelection, {
+    providerId: "glm",
+    modelId: "glm-4.7",
+    options: { reasoningLevel: "high" },
+  });
+  settle("cfg-m-same");
+
+  // 4) 不带 --model：继承 defaultModel 全量（既有行为保持）
+  const plain = await runCli(["run", "配置默认模型", "--cwd", "/tmp/cfg-m-plain", "--name", "cfg-m-plain"], modelsEnv);
+  assert.equal(plain.status, 0, plain.stderr);
+  assert.deepEqual(createBodyOf("cfg-m-plain").modelSelection, selection);
+  settle("cfg-m-plain");
+
+  // 5) 同模型 + --thought off：显式覆盖 off（既有行为保持）
   const override = await runCli(
-    ["run", "覆盖模型沿用档位", "--cwd", "/tmp/cfg-model-b", "--name", "cfg-model-b", "--model", "openai/gpt-5"],
+    ["run", "同模型显式档位", "--cwd", "/tmp/cfg-m-over", "--name", "cfg-m-over", "--model", "glm/glm-4.7", "--thought", "off"],
     modelsEnv,
   );
   assert.equal(override.status, 0, override.stderr);
-  const overrideCall = fake.calls.find(
-    (entry) => entry.method === "POST" && entry.url.split("?")[0] === "/api/tasks" && entry.body?.title === "cfg-model-b",
-  );
-  assert.ok(overrideCall, "应有 cfg-model-b 的建任务请求");
-  assert.deepEqual(overrideCall.body.modelSelection, {
-    providerId: "openai",
-    modelId: "gpt-5",
-    options: { reasoningLevel: "medium" },
+  assert.deepEqual(createBodyOf("cfg-m-over").modelSelection, {
+    providerId: "glm",
+    modelId: "glm-4.7",
+    options: { reasoningLevel: "off" },
   });
-  settle("cfg-model-b");
+  settle("cfg-m-over");
 });
 
 test("models：文本表含表头/模型/默认标记；--json 输出可解析", async () => {
@@ -718,6 +809,35 @@ test("run：工作区未打开（409）→ exit 3 + zcode_workspace_not_open", a
   assert.match(result.stderr, /zcode_workspace_not_open/u);
 });
 
+test("models：工作区未打开（409）→ exit 3 zcode_workspace_not_open（与其它端点 409 同口径）", async () => {
+  const result = await runCli(["models", "--cwd", "/workspace-closed"]);
+  assert.equal(result.status, 3);
+  assert.match(result.stderr, /zcode_workspace_not_open/u);
+  assert.match(result.stderr, /先在 ZCode 里打开该工作区/u);
+});
+
+test("run：--model 预校验遇工作区未打开（409）→ 同为 exit 3（与不带 --model 的 createTask 409 口径闭合）", async () => {
+  const callsBefore = fake.calls.length;
+  const result = await runCli([
+    "run",
+    "预校验409任务",
+    "--cwd",
+    "/workspace-closed",
+    "--name",
+    "closed-2",
+    "--model",
+    "glm/glm-4.7",
+  ]);
+  assert.equal(result.status, 3, result.stderr);
+  assert.match(result.stderr, /zcode_workspace_not_open/u);
+  assert.ok(
+    !fake.calls
+      .slice(callsBefore)
+      .some((call) => call.method === "POST" && call.url.split("?")[0] === "/api/tasks"),
+    "预校验 409 应在建任务之前拦下，不触 POST /api/tasks",
+  );
+});
+
 test("并行两任务：taskId 不同；wait A 立即拿到事件且 eventsSeq 推进；wait B 超时", async () => {
   const a = await dispatchTask("para-a");
   const b = await dispatchTask("para-b");
@@ -802,6 +922,33 @@ test("wait 打印 steer 注入结果（injected 与 fellBack）；steer 事件�
   settle("steer-1");
 });
 
+test("wait 启动后再 send --steer：对账集合实时刷新，自己的引导不被误判成 GUI 侧", async () => {
+  const { taskId } = await dispatchTask("steer-live");
+  fake.createTaskAlreadyRunning(taskId);
+
+  // 标准工作流：后台 wait（异步 spawn 起长轮询）+ 运行中 send --steer。send 把
+  // commandId 写入分片发生在 wait 启动之后——对账集合若固化在入口快照，这里必误判。
+  const callsBefore = fake.calls.length;
+  const pending = runCli(["wait", "steer-live", "--timeout", "8"]);
+  const t0 = Date.now();
+  while (fake.calls.length === callsBefore && Date.now() - t0 < 5000) {
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  }
+  assert.ok(fake.calls.length > callsBefore, "wait 的 events 请求应已到达 fake（长轮询已挂上）");
+
+  const steered = await runCli(["send", "steer-live", "打断", "--steer"]);
+  assert.equal(steered.status, 0, steered.stderr);
+  assert.match(steered.stdout, /投递结果：steered/u);
+
+  fake.settleSteer(taskId, "injected");
+  const result = await pending;
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /\[input\.steered\] 你的引导已受理（commandId=cmd-\d+）；注入结果以事件流为准/u);
+  assert.ok(!result.stdout.includes("来自 GUI 侧的引导"), `自己的引导不得误判成 GUI 侧：${result.stdout}`);
+  assert.match(result.stdout, /\[steer\.injected\] 引导已注入当前轮（打断生效）/u);
+  settle("steer-live");
+});
+
 test("send：body 带幂等键；空闲 --steer 应答 sent", async () => {
   await dispatchTask("n1");
 
@@ -826,6 +973,13 @@ test("resume：空闲接续 sent；运行中拒绝（exit 4 busy_for_resume）",
   const idle = await runCli(["resume", "res-1", "继续往下"]);
   assert.equal(idle.status, 0, idle.stderr);
   assert.match(idle.stdout, /✓ 已接续对话（sent）/u);
+
+  // FR-004：send/resume 同规则——resume 也生成幂等键并随 messages body 上送
+  // （"zsub-"+UUID，总长 41），网络失败同键安全重试一次；回归时丢键在此变红。
+  const lastMessages = fake.calls.filter((call) => call.url.split("?")[0].endsWith("/messages")).at(-1);
+  assert.ok(lastMessages, "resume 应有 messages 请求");
+  assert.match(lastMessages.body.clientRequestId, /^zsub-/u);
+  assert.equal(lastMessages.body.clientRequestId.length, 41, "幂等键应为 zsub-（5）+ UUID（36）= 41 字符");
 
   fake.createTaskAlreadyRunning(taskId);
   const busy = await runCli(["resume", "res-1", "又一句"]);

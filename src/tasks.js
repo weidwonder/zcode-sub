@@ -148,9 +148,15 @@ export function updateTask(home, name, patch) {
     backupCorruptShard(file);
     return null;
   }
-  const record = shard.record;
+  // 写前重读合并：并发写方（wait 的 eventsSeq / send 的 steerCommandIds）互不覆盖——
+  // 以刚重读到的最新分片为底应用增量（lastStatus 直接覆盖、eventsSeq 取 max），
+  // 后写者不再把先写者刚落的字段冲掉；重读缺失/损坏时维持原读到的分片直接覆盖。
+  const fresh = readShard(file);
+  const record = fresh.record ?? shard.record;
   if (patch.lastStatus !== undefined) record.lastStatus = patch.lastStatus;
-  if (patch.eventsSeq !== undefined) record.eventsSeq = patch.eventsSeq;
+  if (patch.eventsSeq !== undefined) {
+    record.eventsSeq = fresh.record ? Math.max(record.eventsSeq ?? 0, patch.eventsSeq) : patch.eventsSeq;
+  }
   atomicWriteJson(file, record);
   return record;
 }
@@ -163,7 +169,11 @@ export function appendSteerCommandId(home, name, commandId) {
   const file = shardFileOf(home, name);
   const shard = readShard(file);
   if (!shard.record) return null;
-  const record = shard.record;
+  // 写前重读合并：并发写方（wait 的 eventsSeq / send 的 steerCommandIds）互不覆盖——
+  // 以刚重读到的最新分片为底追加（fresh 的 lastStatus/eventsSeq 原样保留），重读
+  // 缺失/损坏时维持原读到的分片。
+  const fresh = readShard(file);
+  const record = fresh.record ?? shard.record;
   const ids = Array.isArray(record.steerCommandIds) ? record.steerCommandIds : [];
   if (ids.includes(commandId)) return record;
   record.steerCommandIds = [...ids, commandId];

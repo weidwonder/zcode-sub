@@ -4,7 +4,7 @@ superseded_by: ''
 archived: ''
 last_confirmed: 2026-10-28
 authority_refs:
-  - 'zcode-sub CLI 命令面（setup/run/send/wait/result/resume/stop/list/mcp）'
+  - 'zcode-sub CLI 命令面（setup/run/send/wait/result/resume/stop/list/models/model/mcp）'
   - '状态目录布局（ZCODE_SUB_HOME 下 config.json、tasks/<name>.json 分片、mailboxes/*.jsonl）'
   - 'MCP 工具 reply_to_parent(task, message) 契约'
   - '对 ZCode 本机任务 API（契约 v2）的字段依赖（§3 末清单）'
@@ -82,9 +82,9 @@ authority_refs:
 | FR-014 | README 按 v2 更新（安装、setup、命令、边界） |
 | FR-015 | 删除 v1 残留：`src/daemon.js`、`src/ensure.js`、`src/ingress.js`、v1 fake-zcode、bind/new/status/stop 文本命令逻辑、`bot-webhook-ingress.json` 读写、config 的 botId/secret/userId/daemonPort 字段 |
 | FR-023（Skill 评审轮） | CLI 工具性：`--version`（读 package.json，exit 0）；未知参数按命令白名单报用法错误（exit 1，不再静默忽略）；USAGE 扩充承接从 SKILL.md 下沉的细节（mode 11 值枚举、9 类事件、--timeout 默认 600、环境变量表）；setup 遇 HOME 重定向的提示直接给 shim 示例与 `ZCODE_SUB_HOME`/`ZCODE_DATA_BASE_DIR` 两个变量的含义 |
-| FR-024（模型选择轮） | `zcode-sub models [--cwd <绝对路径>] [--json]`：调 `GET /api/models`，文本表列 providerId/modelId/thoughtLevels/默认标记（preferred 命中 `*`）、--json 原样；`zcode-sub model <name> <providerId/modelId> [--thought <档位>]`：本地预校验后 `POST /api/tasks/:id/model`（带分片 workspacePath 与 clientRequestId），成功打印「已切换模型 …（下一轮生效）」；**本地预校验**：带 modelSelection 的 run/model 先 GET /api/models，模型不存在/档位非法/模型无档位 → `zcode_model_invalid` exit 1 并列出可选值；`resolveModelSelection`：`--model <providerId/modelId>`（格式非法用法错误）与 `--thought` 合成，优先级 flags > `config.defaultModel`，最终无 providerId/modelId 则不带、--thought 无模型时用法错误 |
+| FR-024（模型选择轮） | `zcode-sub models [--cwd <绝对路径>] [--json]`：调 `GET /api/models`，文本表列 providerId/modelId/thoughtLevels/默认标记（preferred 命中 `*`）、--json 原样，**409 workspace_not_open → exit 3（与 createTask 同口径，评审五轮修）**；`zcode-sub model <name> <providerId/modelId> [--thought <档位>]`：本地预校验后 `POST /api/tasks/:id/model`（带分片 workspacePath 与 clientRequestId），成功打印「已切换模型 …（下一轮生效）」；**本地预校验**：带 modelSelection 的 run/model 先 GET /api/models，模型不存在/档位非法/模型无档位 → `zcode_model_invalid` exit 1 并列出可选值（档位错误文案给脱困路径：显式 --thought 覆盖/改 config）；`resolveModelSelection`：`--model <providerId/modelId>`（格式非法用法错误）与 `--thought` 合成，优先级 flags > `config.defaultModel`，**defaultModel 的档位仅在未传 --model 或 --model 与 defaultModel 同模型时继承（换模型不继承，评审五轮修）**，最终无 providerId/modelId 则不带、--thought 无模型或无值时用法错误 |
 | FR-016 | 并发派发上限（评审门第一轮拍板）：run 前对本地登记中非终态（dispatched/running/waiting_permission/waiting_input/未知值）任务逐个 GET 刷新后计数，达到上限拒绝派发；上限默认 4，环境变量 `ZCODE_SUB_MAX_RUNNING` 可调；新错误码 `zcode_too_many_running`（退出码 8）。刷新返回 404 的任务视为已在 GUI 删除，本地置 `error` 终态释放额度（评审二轮 N2）；上限为尽力检查，多进程同时派发瞬间可能超出（N4） |
-| FR-017 | 副作用 POST 的重试纪律：`POST /api/tasks` 携带 `clientRequestId` 幂等键（run 生成并记入分片；上游短期去重，同键返回同一 taskId），网络失败以同键重试一次；其余 POST（messages/stop）不重试，失败报 `zcode_api_unreachable` 并提示「任务可能已创建/已执行，先 list / GUI 核对」；GET 保留一次重试（评审二轮按上游新增 clientRequestId 撤回一轮的保守「POST 一律不重试」） |
+| FR-017 | 副作用 POST 的重试纪律：**无幂等键的 POST 不重试**；带 `clientRequestId` 的 create/messages/setModel 同键安全重试一次（run/send/resume/model 均生成 `zsub-<uuid>`）；stop 不带键不重试，失败报 `zcode_api_unreachable` 并提示「任务可能已创建/已执行，先 list / GUI 核对」；GET 保留一次重试（评审二轮按上游新增 clientRequestId 撤回一轮的保守「POST 一律不重试」，r6 起扩至 messages、模型轮扩至 setModel——D-v2-10/19/20） |
 | FR-018 | 任务登记并发安全：每任务一分片文件 `<home>/tasks/<name>.json`（registerTask 用 `wx` 独占创建防同名竞态）；单分片损坏时先备份 `.corrupt-<ts>` 再按不存在处理 |
 | FR-019 | 所有按 taskId 的 API 请求携带登记的 workspacePath（GET 走 query、POST 进 body）——ZCode 重启丢归属表时据此路由（契约对齐第 4 条）；wait 处理事件 seq 回退（ZCode 重启后缓冲清空、nextSeq 变小）：重置本地游标并继续等待，不当新事件 |
 | FR-020 | wait 输出体量双闸：单条事件 text/error/summary 超 2000 字符只打印前段并注明总长（全文用 result/GUI）；单次 wait 输出总量上限 20000 字符，超出后剩余事件/reply 降级为一行「剩余 N 条略过 + 获取方式」，游标照常推进不重放（评审二轮 N1）；单条 reply 超 20000 字符同样降级为前 2000 字符 + 总长 + 信箱文件路径指针（与事件单条截断同构，评审三轮 R3-1），未超限的单条 reply 保持全文；result 保持全文 |
@@ -134,7 +134,7 @@ v1 的 seq/dispatch/status/notice 行语义删除；daemon.json、daemon.log、c
 **外部集成契约（ZCode 本机任务 API）**：
 - REQUIRED 操作如上表；鉴权 `Authorization: Bearer <token>`（常量时间比较在 A 侧）；`Host` 头校验 403；body 仅 `application/json`、上限 16 MiB；请求超时：普通 10s，events 长轮询 waitMs+5s。
 - 归一化：status 五值透传不翻译；delivery 结果透传；事件按 type 分发打印。
-- 机器可读错误码（stderr+退出码统一，闭集）：`zcode_api_unreachable`（连不上 API 或 **wait 超时 TIMEOUT**，2）、`zcode_workspace_not_open`（409：未打开或远端工作区，3）、`zcode_send_failed`（messages/stop/result/events 等按 taskId 请求的 4xx/5xx 非 401/403/409，含 404 任务不存在，**及运行中 resume 被拒**，4）、`zcode_unauthorized`（401/403，5）、`zcode_name_invalid`（名字非法，7）/`zcode_name_taken`（重名，7）、`zcode_too_many_running`（非终态任务达上限，8）。仅内部使用不占退出码：`zcode_not_configured`、`zcode_task_not_found`（本地无此任务）、`zcode_create_failed`（建任务异常响应）、`zcode_health_mismatch`、`zcode_task_busy_for_resume`（归入 4）。
+- 机器可读错误码（stderr+退出码统一，闭集）：`zcode_api_unreachable`（连不上 API 或 **wait 超时 TIMEOUT**，2）、`zcode_workspace_not_open`（409：未打开或远端工作区，3）、`zcode_send_failed`（messages/stop/result/events 等按 taskId 请求的 4xx/5xx 非 401/403/409，含 404 任务不存在，**及运行中 resume 被拒**，4）、`zcode_unauthorized`（401/403，5）、`zcode_name_invalid`（名字非法，7）/`zcode_name_taken`（重名，7）、`zcode_too_many_running`（非终态任务达上限，8）、`zcode_model_invalid`（模型/思考档位不在 /api/models 可用列表，1——报错列出可选值）。仅内部使用不占退出码：`zcode_not_configured`、`zcode_task_not_found`（本地无此任务）、`zcode_create_failed`（建任务异常响应）、`zcode_health_mismatch`、`zcode_task_busy_for_resume`（归入 4）。
 - **本集成不做哪些写操作**：不批权限、不写 ZCode 数据文件（开关文件按契约第 1 条「由用户或桥接程序 setup 写入」，仅 setup 显式执行）。
 - **B 依赖的字段级契约（与 A 实装对齐后的终值）**：
   - `events[i]`：`seq`（每任务从 1 单调，缓冲 500，溢出 `{resync:true}`）、`at`（毫秒）、`type` ∈ turn.started / assistant.message / turn.completed / turn.failed / permission.requested / input.queued / input.steered / steer.injected / steer.fellBack；payload 字段 `turn.started{turnId}`、`assistant.message{text}`、`turn.completed{text}`（停止后 text 可为空）、`turn.failed{error}`、`permission.requested{summary}`、`input.queued{commandId}`、`input.steered{commandId}`（由 CLI `turn_steer_queued` 投影产生——steer 受理不再由 API 自产事件；commandId 与 202 应答 commandId 相等，是对账键——同一任务也可能收到 GUI 侧引导的同型事件，B 按 commandId 严格对账：在本地分片 `steerCommandIds` 里→「你的引导已受理」，不在→「来自 GUI 侧的引导」）、`steer.injected`（由 `turn_steer_status` drained 投影——引导已注入当前轮，无额外 payload）、`steer.fellBack{error}`（由 `turn_steer_status` discarded/rejected 投影——引导被降级/拒绝）。
@@ -159,7 +159,7 @@ switchFile = <dataBaseDir>/.zcode/v2/local-task-api.json
       打印「已写入开关文件，需重启 ZCode 生效」
 （目录不可写 → 打印脱敏配置示例（token 仅露前 4 位）与 dwc grant 提示，不绕过——同 Invariant 2；状态目录可写性探测在 setup 最前置一处，见 FR-001）
 GET /health（api/version 校验）→ 打印结果与排查提示
-ensureHome 可写性实测：不可写才提示 dwc grant（2026-10-27 起通常已授权，按实测输出）
+ensureHome 可写性实测：不可写时按是否设置 ZCODE_SUB_HOME 分支——未设（HOME 被重定向）给 shim 模板与 ZCODE_SUB_HOME/ZCODE_DATA_BASE_DIR 两变量含义（FR-023）；已设提示对该目录授权（本机环境命令 dwc grant）
 打印 MCP 配置片段（command=node, args=[<pkg>/bin/zcode-sub.js, mcp],
   env={ZCODE_SUB_HOME:<abs>, ZCODE_SUB_TOKEN:不需要→删除}）——v2 MCP 直写信箱，只需 ZCODE_SUB_HOME
 ```
@@ -168,12 +168,14 @@ ensureHome 可写性实测：不可写才提示 dwc grant（2026-10-27 起通常
 ```
 apiFetch(config, path, {method, body, timeoutMs})：
   headers: Authorization: Bearer <token>, content-type: application/json
-  401/403 → zcode_unauthorized；网络失败：GET 重试 1 次，POST 不重试（FR-017：仅 createTask 带 clientRequestId 幂等键例外）→ zcode_api_unreachable
-createTask(config, {workspacePath, prompt, title}) → {taskId}（409 → zcode_workspace_not_open）
-sendMessage(config, taskId, text, delivery) → {delivery, commandId?}
-stopTask(config, taskId)
-getTask(config, taskId) → {status, lastAssistantText, ...}
-getEvents(config, taskId, after, waitMs) → {events, nextSeq} | {resync: true}
+  401/403 → zcode_unauthorized；网络失败：GET 重试 1 次，无幂等键 POST 不重试（FR-017）→ zcode_api_unreachable
+createTask(config, {workspacePath, prompt, title, mode?, modelSelection?, clientRequestId}) → {taskId, warning?}（409 → zcode_workspace_not_open；带键时网络失败同键重试一次）
+sendMessage(config, taskId, text, delivery?, workspacePath?, clientRequestId?) → {delivery, commandId?}
+stopTask(config, taskId, workspacePath?)
+getTask(config, taskId, workspacePath?) → {status, lastAssistantText, ...}
+getEvents(config, taskId, after, waitMs, workspacePath?) → {events, nextSeq} | {resync: true}
+listModels(config, workspacePath?) → {providers, preferred?}（409 workspace_not_open → zcode_workspace_not_open，与 createTask 同口径）
+setModel(config, taskId, modelSelection, workspacePath?, clientRequestId?) → {ok:true}（带键时同键重试一次）
 ```
 
 ### 4.3 run / send / resume / stop / result / wait / list
@@ -198,7 +200,7 @@ wait: deadline=now+timeout(默认600s)
       events 非空 → 逐条打印（正文>2000 字符截断+注明总长）→ eventsSeq=nextSeq → exit 0
       空 → 继续 loop（回来先查信箱）
   打印格式：`[<type>] <text|error|summary>`；permission.requested 后附一行「⏳ 请在 ZCode GUI 处理该权限请求」
-list: 本地任务表（name/taskId 前 8 位/lastStatus/createdAt/workspacePath）
+list: 本地任务表（name/taskId 后 8 位（真机轮改，前缀同为 session_ 无区分度）/lastStatus/createdAt/workspacePath）
 ```
 
 ### 4.4 MCP（src/mcp.js 改造）
@@ -315,7 +317,7 @@ stateDiagram-v2
 | AC-010 | 冒烟脚本 v2 步骤断言清楚 | FR-012 |
 | AC-011 | Skill/README v2 更新且覆盖并行与 send 语义 | FR-013,014 |
 | AC-012 | v1 残留删净（§8.2 逐项：无引用、文件不存在） | FR-015 |
-| AC-013 | 并发上限（默认 4 与 env 覆盖）、POST 重试纪律（createTask 同键重试、其余 POST 不重试）、子进程并行登记不丢、wait 截断（含单条 reply 降级）、游标回退、端口冲突、403/415/405/413、workspacePath 传递均有用例 | FR-016~FR-022 |
+| AC-013 | 并发上限（默认 4 与 env 覆盖）、POST 重试纪律（带键同键重试、无键 POST 不重试）、子进程并行登记不丢、wait 截断（含单条 reply 降级）、游标回退、端口冲突、403/415/405/413、workspacePath 传递均有用例 | FR-016~FR-022 |
 
 覆盖自查：FR-001→AC-002/003/006；FR-002→AC-002/003；FR-003→AC-002/003/004；FR-004→AC-002/008；FR-005→AC-002/004/008；FR-006→AC-002/003；FR-007→AC-002/003；FR-008→AC-002；FR-009→AC-002；FR-010→AC-002/009；FR-011→AC-008；FR-012→AC-010；FR-013→AC-011；FR-014→AC-011；FR-015→AC-012；FR-016~FR-022→AC-013；FR-023→AC-008（--version/未知参数用例）；FR-024→AC-008（models/model/预校验用例）。全覆盖。
 

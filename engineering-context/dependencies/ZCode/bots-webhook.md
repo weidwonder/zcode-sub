@@ -26,7 +26,7 @@ ZCode 桌面版的第三方 Bot 通道之一：外部程序按 webhook 契约把
 | 应用配置目录 | `packages/services/src/paths.ts#getAppConfigDir`（56-58） | 内部 | 现行 | 桥接读开关文件 | `{getDataBaseDir()}/.zcode/v2`；getDataBaseDir 优先级 setDataBaseDir > env ZCODE_DATA_BASE_DIR > HOME（模块加载时取值） |
 | MCP stdio 配置 | `apps/zcode-cli/docs/usage/07-mcp.md`；schema `packages/shared/src/mcp.ts`（31-35） | 配置 | 现行 | `mcp.servers` | stdio 支持 command/args/**env**；需 `features.mcp` 开启 |
 | GUI busy 输入 delivery 语义（v2 send auto 的上游行为） | `packages/ui/src/v4/ConversationComposer.tsx#requestedDelivery`（224-225 行注释、1320-1325 guide 裁决注释） | 内部 | 现行 | GUI 发送框 | busy 输入三档 `startNow`/`queue`/`guide`；guide（引导/steer）最终 steer 或回退 queue 由命令层裁决——`auto` 即走此主链 |
-| 任务服务接口（v2 补丁桥接目标，B 不直接调用） | `packages/services/src/session/zcodeTaskService.ts#enqueueTaskCommand`（322-337）、`#promoteTaskCommand`（339-346）、`#cancelTaskCommand`（348-355）、`#stopGeneration`（358-365）、`#resumeTask`（412-425） | RPC/内部 | 现行 | 桌面 GUI / 本机任务 API 补丁 | 排队（enqueue）/引导提升（promote）/撤销（cancel）以 commandId 为键；stopGeneration 防迟到误杀 |
+| 任务服务接口（v2 补丁桥接目标，B 不直接调用） | `packages/services/src/session/zcodeTaskService.ts#enqueueTaskCommand`（324-339）、`#promoteTaskCommand`（341-348）、`#cancelTaskCommand`（350-358）、`#stopGeneration`（360-…）、`#resumeTask`（414-…）（A 侧 d2e4fd94） | RPC/内部 | 现行；**r5 起本机任务 API 的 send/steer 不再用 enqueue/promote**（改走 sendPrompt 的 v4 sendText 链路带 requestedDelivery；promote 仅插队原语、非即时引导——A 偏离#15/D-v2-18） | 桌面 GUI / 本机任务 API 补丁 | 排队（enqueue）/插队提升（promote，非即时引导）/撤销（cancel）以 commandId 为键；stopGeneration 防迟到误杀 |
 
 ## 陷阱项
 - 任务运行中发普通正文 — 私聊 webhook **无 steer/queue 语义**（那是群聊话题机制）：`handleMessage` 7668-7675 检测到 activeTask 运行即回「当前任务正在运行」并丢弃该消息，改用 /stop 停止或等终态后重发

@@ -526,6 +526,68 @@ test("带 clientRequestId 的 createTask：网络失败重试 1 次同键成功�
   }
 });
 
+test("带 clientRequestId 的 sendMessage：断连重试 1 次同键成功；始终断连共两次且不带防双建提示", async () => {
+  const msgHits = []; // 每次收到的 {pathname, clientRequestId}
+  let mode = "break-first"; // break-first：首个 /messages 断连后转正常；always-break：一律断连
+  const server = createServer((request, response) => {
+    if (request.method !== "POST") {
+      response.destroy();
+      return;
+    }
+    let text = "";
+    request.on("data", (chunk) => (text += chunk));
+    request.on("end", () => {
+      const pathname = request.url.split("?")[0];
+      let reqId;
+      try {
+        reqId = JSON.parse(text).clientRequestId;
+      } catch {
+        reqId = undefined;
+      }
+      msgHits.push({ pathname, clientRequestId: reqId });
+      if (!pathname.endsWith("/messages") || mode !== "serve") {
+        if (pathname.endsWith("/messages") && mode === "break-first") mode = "serve";
+        response.destroy();
+        return;
+      }
+      response.writeHead(202, { "content-type": "application/json" });
+      response.end(JSON.stringify({ delivery: "queued", commandId: "cmd-msg-retry-1" }));
+    });
+  });
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const cfg = { apiPort: server.address().port, token: "t" };
+  const messagesPosts = (reqId) => msgHits.filter((hit) => hit.pathname.endsWith("/messages") && hit.clientRequestId === reqId);
+  try {
+    // 首次断连 → 带幂等键自动重试一次成功，两次 body 的 clientRequestId 相同
+    const first = await sendMessage(cfg, "task-y", "排队的话", "auto", undefined, "req-msg-retry-1");
+    assert.deepEqual(first, { delivery: "queued", commandId: "cmd-msg-retry-1" });
+    assert.deepEqual(
+      msgHits.filter((hit) => hit.pathname.endsWith("/messages")).map((hit) => hit.clientRequestId),
+      ["req-msg-retry-1", "req-msg-retry-1"],
+      "应重试一次且两次 clientRequestId 相同",
+    );
+
+    // 始终断连：重试耗尽后 unreachable 共两次请求；带键失败消息不带防双建提示（已自动重试过）
+    mode = "always-break";
+    await assert.rejects(
+      () => sendMessage(cfg, "task-y", "又一句", "auto", undefined, "req-msg-retry-2"),
+      (error) => {
+        assert.equal(error.code, "zcode_api_unreachable");
+        assert.equal(error.exitCode, 2);
+        assert.ok(
+          !error.message.includes("不要盲目重试"),
+          `带幂等键的 sendMessage 失败消息不应带防双建提示：${error.message}`,
+        );
+        return true;
+      },
+    );
+    assert.equal(messagesPosts("req-msg-retry-2").length, 2, "带幂等键的网络失败应重试一次共两次");
+  } finally {
+    server.closeAllConnections?.();
+    await new Promise((resolve) => server.close(() => resolve()));
+  }
+});
+
 test("unavailable_host（503）：视为暂态——GET 重试 1 次、无幂等 POST 只 1 次、带幂等 POST 重试后仍失败", async () => {
   fake.setOpUnavailable(true);
   try {
