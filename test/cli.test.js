@@ -31,6 +31,19 @@ let modelsHome; // config.defaultModel（默认模型选择）与 --model 覆盖
 
 // fake Zcode 跑在本测试进程内，必须用异步 spawn——spawnSync 会冻结事件循环，
 // 让 fake 无法响应 CLI 子进程的请求。
+
+// chmod 后目录是否仍可写：tmpdir 带继承 ACL（macOS `ls -le` 有 ACE）时 chmod 造不出
+// 不可写，此时不可写用例只能 skip。skip 分支返回时尚未进 try，临时目录由调用方清理。
+function isStillWritable(dir) {
+  const probe = join(dir, ".writable-probe");
+  try {
+    writeFileSync(probe, "");
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 function runCli(args, extraEnv = {}) {
   return new Promise((resolve) => {
     const child = spawn(process.execPath, [BIN, ...args], {
@@ -234,13 +247,20 @@ test("setup：--api-port 非整数 → exit 1 用法错误（不静默走默认�
   }
 });
 
-test("setup：开关文件目录不可写 → 手动创建指引 + dwc grant 提示，流程继续", async () => {
+test("setup：开关文件目录不可写 → 手动创建指引 + dwc grant 提示，流程继续", async (t) => {
   if (typeof process.getuid === "function" && process.getuid() === 0) {
     return; // root 模拟不了不可写
   }
   const roHome = mkdtempSync(join(tmpdir(), "zcode-sub-setup-ro-home-"));
   const roData = mkdtempSync(join(tmpdir(), "zcode-sub-setup-ro-data-"));
   chmodSync(roData, 0o555);
+  if (isStillWritable(roData)) {
+    chmodSync(roData, 0o700); // ACE 可能只授写不授删，先恢复权限再清理
+    rmSync(roHome, { recursive: true, force: true });
+    rmSync(roData, { recursive: true, force: true });
+    t.skip("chmod 后目录仍可写（tmpdir 带继承 ACL），ACL 环境下无法模拟不可写");
+    return;
+  }
   try {
     const result = await runCli(["setup", "--api-port", String(setupFake.port)], {
       ZCODE_SUB_HOME: roHome,
@@ -263,13 +283,20 @@ test("setup：开关文件目录不可写 → 手动创建指引 + dwc grant 提
   }
 });
 
-test("setup：状态目录不可写 → exit 1 + dwc grant 指引，不裸崩", async () => {
+test("setup：状态目录不可写 → exit 1 + dwc grant 指引，不裸崩", async (t) => {
   if (typeof process.getuid === "function" && process.getuid() === 0) {
     return; // root 模拟不了不可写
   }
   const roHome = mkdtempSync(join(tmpdir(), "zcode-sub-setup-rohome-"));
   const roData = mkdtempSync(join(tmpdir(), "zcode-sub-setup-rodata2-"));
   chmodSync(roHome, 0o551);
+  if (isStillWritable(roHome)) {
+    chmodSync(roHome, 0o700); // ACE 可能只授写不授删，先恢复权限再清理
+    rmSync(roHome, { recursive: true, force: true });
+    rmSync(roData, { recursive: true, force: true });
+    t.skip("chmod 后目录仍可写（tmpdir 带继承 ACL），ACL 环境下无法模拟不可写");
+    return;
+  }
   try {
     const result = await runCli(["setup"], { ZCODE_SUB_HOME: roHome, ZCODE_DATA_BASE_DIR: roData });
     assert.equal(result.status, 1, result.stderr);
