@@ -58,5 +58,6 @@
 
 ### 内部
 
+- `patch/series` 的三个补丁提交号更新为 `76dc288b` / `3179cb1f` / `708c29dc`：ZCode 侧这三个提交改写了作者邮箱（内容不变），旧提交号已不存在。
 - engineering-context：ZCode 依赖声明更新为 v2 接口清单；bots-webhook 事实卡保留 v1 会话语义结论（决策记录考古用）。
 - spec（`docs/spec/2026-10-27-zcode-sub-patch-tooling-eng-spec.md`）、ZCode 上游事实卡（`engineering-context/dependencies/ZCode/`）与依赖声明（`engineering-context/dependencies/ZCode.md`）。

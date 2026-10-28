@@ -4,9 +4,9 @@
 # 净提交来自 ZCode 仓 feat/local-task-api 分支（从上游 main 3c5b2276 整理出的三个干净提交，
 # 不含 v1 webhook 引入与 revert 对冲对、不含 chore(local-dw) 过程文档提交；同一组提交也是上游 PR 的内容）。
 # fix(shared): accept inputPresentation on turn.steerQueued events
-d868fee7
+76dc288b
 # feat(services): sendPrompt accepts requestedDelivery for GUI-parity steering
-8033e614
+3179cb1f
 # feat(desktop): opt-in local task API for driving desktop tasks from local tools
-883d2135
+708c29dc
 ! pnpm vitest run packages/desktop/test/localTaskApi.test.ts packages/desktop/test/localTaskApiResponder.test.ts packages/shared/test/zcodeProtocol.test.ts
